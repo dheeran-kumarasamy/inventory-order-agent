@@ -29,14 +29,25 @@ def _looks_like_service_account_mapping(data) -> bool:
     return required.issubset(set(data.keys()))
 
 
+def _normalize_service_account_info(info: dict) -> dict:
+    normalized = dict(info)
+    private_key = normalized.get("private_key")
+    if isinstance(private_key, str):
+        key = private_key.strip().strip('"').strip("'")
+        if "\\n" in key:
+            key = key.replace("\\n", "\n")
+        normalized["private_key"] = key
+    return normalized
+
+
 def _load_service_account_info() -> dict:
     # Support either raw JSON string or structured secret/env representations.
     if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
         raw = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
         if isinstance(raw, dict):
-            return dict(raw)
+            return _normalize_service_account_info(dict(raw))
         try:
-            return json.loads(str(raw))
+            return _normalize_service_account_info(json.loads(str(raw)))
         except Exception as err:
             raise ConfigError(
                 "Invalid GOOGLE_SERVICE_ACCOUNT_JSON. Expected valid JSON service-account content."
@@ -45,9 +56,9 @@ def _load_service_account_info() -> dict:
     if "google_service_account" in st.secrets:
         sa = st.secrets["google_service_account"]
         if isinstance(sa, dict):
-            return dict(sa)
+            return _normalize_service_account_info(dict(sa))
         try:
-            return dict(sa)
+            return _normalize_service_account_info(dict(sa))
         except Exception as err:
             raise ConfigError(
                 "Invalid [google_service_account] in Streamlit secrets. Expected a key/value object."
@@ -55,12 +66,12 @@ def _load_service_account_info() -> dict:
 
     # Also accept top-level secrets.toml service account fields.
     if _looks_like_service_account_mapping(dict(st.secrets)):
-        return dict(st.secrets)
+        return _normalize_service_account_info(dict(st.secrets))
 
     env_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if env_json:
         try:
-            return json.loads(env_json)
+            return _normalize_service_account_info(json.loads(env_json))
         except Exception as err:
             raise ConfigError(
                 "Invalid GOOGLE_SERVICE_ACCOUNT_JSON environment variable. Expected valid JSON."
@@ -69,7 +80,7 @@ def _load_service_account_info() -> dict:
     env_json_alt = os.getenv("GOOGLE_SERVICE_ACCOUNT", "").strip()
     if env_json_alt:
         try:
-            return json.loads(env_json_alt)
+            return _normalize_service_account_info(json.loads(env_json_alt))
         except Exception as err:
             raise ConfigError(
                 "Invalid GOOGLE_SERVICE_ACCOUNT environment variable. Expected valid JSON."
