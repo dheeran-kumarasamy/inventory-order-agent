@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import datetime
 
@@ -17,17 +18,60 @@ SCOPES = [
 MONTH_PATTERNS = ["%B-%Y", "%b-%Y"]
 
 
+class ConfigError(ValueError):
+    pass
+
+
+def _load_service_account_info() -> dict:
+    # Support either raw JSON string or structured secret/env representations.
+    if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
+        raw = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+        if isinstance(raw, dict):
+            return dict(raw)
+        try:
+            return json.loads(str(raw))
+        except Exception as err:
+            raise ConfigError(
+                "Invalid GOOGLE_SERVICE_ACCOUNT_JSON. Expected valid JSON service-account content."
+            ) from err
+
+    if "google_service_account" in st.secrets:
+        sa = st.secrets["google_service_account"]
+        if isinstance(sa, dict):
+            return dict(sa)
+        try:
+            return dict(sa)
+        except Exception as err:
+            raise ConfigError(
+                "Invalid [google_service_account] in Streamlit secrets. Expected a key/value object."
+            ) from err
+
+    env_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if env_json:
+        try:
+            return json.loads(env_json)
+        except Exception as err:
+            raise ConfigError(
+                "Invalid GOOGLE_SERVICE_ACCOUNT_JSON environment variable. Expected valid JSON."
+            ) from err
+
+    raise ConfigError(
+        "Missing Google credentials. Add GOOGLE_SERVICE_ACCOUNT_JSON to Streamlit secrets "
+        "(or add [google_service_account] fields), or set GOOGLE_SERVICE_ACCOUNT_JSON env var."
+    )
+
+
 def get_gspread_client():
-    creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    creds_dict = _load_service_account_info()
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
 
 def _service_account_email() -> str:
     try:
-        creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+        creds_dict = _load_service_account_info()
         return str(creds_dict.get("client_email", "")).strip()
-    except Exception:
+    except ConfigError:
         return ""
 
 
@@ -51,6 +95,8 @@ def _open_spreadsheet(url: str):
     try:
         client = get_gspread_client()
         return client.open_by_key(sheet_id_from_url(url))
+    except ConfigError:
+        raise
     except (PermissionError, SpreadsheetNotFound, APIError, ValueError) as err:
         _raise_sheet_access_error(url, err)
 
