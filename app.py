@@ -56,24 +56,25 @@ with st.sidebar:
     if master_sheet_url:
         st.markdown("---")
         st.markdown("### 📋 Sheet Preview")
-        try:
-            structure = discover_master_sheet_structure(master_sheet_url)
-            st.markdown(
-                "🟢 software stock tab found"
-                if structure["has_software_stock"]
-                else "🔴 software stock tab missing"
-            )
+        if st.button("🔍 Preview Sheet Structure", key="preview_btn"):
+            try:
+                structure = discover_master_sheet_structure(master_sheet_url)
+                st.markdown(
+                    "🟢 software stock tab found"
+                    if structure["has_software_stock"]
+                    else "🔴 software stock tab missing"
+                )
 
-            monthly_tabs = structure["monthly_tabs"]
-            if monthly_tabs:
-                st.caption(f"Detected monthly sales tabs: {len(monthly_tabs)}")
-                st.dataframe(pd.DataFrame(monthly_tabs), use_container_width=True, hide_index=True)
-            else:
-                st.warning("No monthly sales tabs found. Expected names like June-2024.")
-        except Exception as preview_error:
-            st.warning(f"Could not preview sheet structure: {_format_exception(preview_error)}")
-            with st.expander("Show technical details"):
-                st.code(traceback.format_exc())
+                monthly_tabs = structure["monthly_tabs"]
+                if monthly_tabs:
+                    st.caption(f"Detected monthly sales tabs: {len(monthly_tabs)}")
+                    st.dataframe(pd.DataFrame(monthly_tabs), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No monthly sales tabs found. Expected names like June-2024.")
+            except Exception as preview_error:
+                st.warning(f"Could not preview sheet structure: {_format_exception(preview_error)}")
+                with st.expander("Show technical details"):
+                    st.code(traceback.format_exc())
 
     st.markdown("---")
     st.caption("Built for V-Pulley Inventory Management")

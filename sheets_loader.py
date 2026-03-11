@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from datetime import datetime
 
 import gspread
@@ -123,14 +124,26 @@ def _raise_sheet_access_error(url: str, err: Exception) -> None:
     ) from err
 
 
-def _open_spreadsheet(url: str):
-    try:
-        client = get_gspread_client()
-        return client.open_by_key(sheet_id_from_url(url))
-    except ConfigError:
-        raise
-    except (PermissionError, SpreadsheetNotFound, APIError, ValueError) as err:
-        _raise_sheet_access_error(url, err)
+def _open_spreadsheet(url: str, _retries: int = 3):
+    key = sheet_id_from_url(url)
+    for attempt in range(_retries):
+        try:
+            client = get_gspread_client()
+            return client.open_by_key(key)
+        except ConfigError:
+            raise
+        except APIError as err:
+            if hasattr(err, 'response') and err.response.status_code == 429:
+                if attempt < _retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise ValueError(
+                    "Google Sheets API rate limit exceeded. "
+                    "Please wait a minute and try again."
+                ) from err
+            _raise_sheet_access_error(url, err)
+        except (PermissionError, SpreadsheetNotFound, ValueError) as err:
+            _raise_sheet_access_error(url, err)
 
 
 def sheet_id_from_url(url: str) -> str:
@@ -164,6 +177,7 @@ def _parse_month_tab_title(title: str):
     return None
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def discover_master_sheet_structure(url: str) -> dict:
     spreadsheet = _open_spreadsheet(url)
 
