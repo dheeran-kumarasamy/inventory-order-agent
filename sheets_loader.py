@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 import gspread
 import pandas as pd
@@ -247,9 +248,15 @@ def load_sales_from_sheet(url: str) -> pd.DataFrame:
     sales_frames = []
     ignored = []
 
+    cutoff = datetime.now() - relativedelta(years=2)
+
     for ws in spreadsheet.worksheets():
         month_date = _parse_month_tab_title(ws.title)
         if not month_date:
+            ignored.append(ws.title)
+            continue
+
+        if month_date < cutoff:
             ignored.append(ws.title)
             continue
 
