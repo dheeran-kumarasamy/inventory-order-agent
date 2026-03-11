@@ -22,6 +22,13 @@ class ConfigError(ValueError):
     pass
 
 
+def _looks_like_service_account_mapping(data) -> bool:
+    if not isinstance(data, dict):
+        return False
+    required = {"type", "client_email", "private_key", "token_uri"}
+    return required.issubset(set(data.keys()))
+
+
 def _load_service_account_info() -> dict:
     # Support either raw JSON string or structured secret/env representations.
     if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
@@ -46,6 +53,10 @@ def _load_service_account_info() -> dict:
                 "Invalid [google_service_account] in Streamlit secrets. Expected a key/value object."
             ) from err
 
+    # Also accept top-level secrets.toml service account fields.
+    if _looks_like_service_account_mapping(dict(st.secrets)):
+        return dict(st.secrets)
+
     env_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if env_json:
         try:
@@ -55,9 +66,19 @@ def _load_service_account_info() -> dict:
                 "Invalid GOOGLE_SERVICE_ACCOUNT_JSON environment variable. Expected valid JSON."
             ) from err
 
+    env_json_alt = os.getenv("GOOGLE_SERVICE_ACCOUNT", "").strip()
+    if env_json_alt:
+        try:
+            return json.loads(env_json_alt)
+        except Exception as err:
+            raise ConfigError(
+                "Invalid GOOGLE_SERVICE_ACCOUNT environment variable. Expected valid JSON."
+            ) from err
+
     raise ConfigError(
         "Missing Google credentials. Add GOOGLE_SERVICE_ACCOUNT_JSON to Streamlit secrets "
-        "(or add [google_service_account] fields), or set GOOGLE_SERVICE_ACCOUNT_JSON env var."
+        "(or add [google_service_account] fields, or top-level service account fields), "
+        "or set GOOGLE_SERVICE_ACCOUNT_JSON env var."
     )
 
 
