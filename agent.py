@@ -14,17 +14,21 @@ HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
 ALT_ROW_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
 WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 CENTER = Alignment(horizontal="center", vertical="center")
-MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Order"}
+MACH_HIGHLIGHT_COLS = set()
 NAME_COL_W = 40    # Excel column width for product name columns
 DATA_COL_W = 15    # Excel column width for stock/qty/sales columns
 ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
-NAME_COLS = {"Product Name", "RC Required", "RC Product Name"}
+NAME_COLS = {"Product Name", "RC Required", "RC Product Name", "Product name", "RC required"}
 DATA_COLS = {
     "Product Stock",
     "Avg Monthly Sales",
     "RC Stock",
     "Order",
     "Current Stock",
+    "Stock",
+    "M/C Order",
+    "Manufacturing Order",
+    "Avg Sales",
 }
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
@@ -67,16 +71,17 @@ def find_rc(od, grooves, ptype, rc_lookup):
     return matches[0] if matches else None
 
 
-def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
+def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: pd.DataFrame) -> io.BytesIO:
     wb = Workbook()
     wb.remove(wb.active)
 
     ws_sum = wb.create_sheet("Summary")
     ws_sum.append(["Metric", "Value"])
     ws_sum.append(["Machining Items", len(mach_out)])
-    ws_sum.append(["Manufacturing Items", len(mfg_out)])
+    ws_sum.append(["GP Items", len(mfg_out)])
+    ws_sum.append(["Consolidated Items", len(consolidated_out)])
     ws_sum.append(["Machining Units", int(mach_out["Order"].sum()) if len(mach_out) else 0])
-    ws_sum.append(["Manufacturing Units", int(mfg_out["Order"].sum()) if len(mfg_out) else 0])
+    ws_sum.append(["GP Units", int(mfg_out["Order"].sum()) if len(mfg_out) else 0])
 
     def _apply_sheet(ws, df, highlight_cols):
         cols = list(df.columns)
@@ -133,7 +138,8 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
                         cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
 
     _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
-    _apply_sheet(wb.create_sheet("Manufacturing Orders"), mfg_out, set())
+    _apply_sheet(wb.create_sheet("GP Orders"), mfg_out, set())
+    _apply_sheet(wb.create_sheet("Consolidated order"), consolidated_out, set())
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -141,7 +147,7 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     return buf
 
 
-def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date) -> io.BytesIO:
+def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: pd.DataFrame, report_date: date) -> io.BytesIO:
     pdf = FPDF(orientation="L", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -164,9 +170,10 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
     total_mfg = int(mfg_out["Order"].sum()) if len(mfg_out) else 0
     for label, val in [
         ("Machining Items", len(mach_out)),
-        ("Manufacturing Items", len(mfg_out)),
+        ("GP Items", len(mfg_out)),
+        ("Consolidated Items", len(consolidated_out)),
         ("Machining Units", total_mach),
-        ("Manufacturing Units", total_mfg),
+        ("GP Units", total_mfg),
     ]:
         pdf.cell(80, 7, label, border=1)
         pdf.cell(40, 7, str(val), border=1, new_x="LMARGIN", new_y="NEXT")
@@ -202,15 +209,18 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
         avail = pdf.w - pdf.l_margin - pdf.r_margin
         numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-        # Column widths: name cols get proportional share, data cols get fixed width
+        # Column widths: name cols = 40, data cols = 15 (scaled down only if page is too narrow)
         pdf.set_font("Helvetica", "", FONT_SIZE)
         col_widths = {}
+        name_w = pdf.get_string_width("W" * 40) + PAD * 2
         data_w = pdf.get_string_width("0" * 15) + PAD * 2
         for c in cols:
             if c in DATA_COLS:
                 col_widths[c] = data_w
+            elif c in NAME_COLS:
+                col_widths[c] = name_w
 
-        # Distribute remaining width to name/text columns
+        # Distribute remaining width to any other columns
         fixed_total = sum(col_widths.get(c, 0) for c in cols)
         name_cols_list = [c for c in cols if c not in col_widths]
         remaining = avail - fixed_total
@@ -218,6 +228,13 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
             per_name = max(remaining / len(name_cols_list), 25)
             for c in name_cols_list:
                 col_widths[c] = per_name
+
+        # If fixed widths exceed available width, scale all columns proportionally.
+        total_w = sum(col_widths.values())
+        if total_w > avail and total_w > 0:
+            scale = avail / total_w
+            for c in cols:
+                col_widths[c] = col_widths[c] * scale
 
         row_counter = [0]  # track row index for alternating colors
 
@@ -299,7 +316,8 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
             _draw_row(vals)
 
     _add_table("Machining Orders", mach_out, highlight_cols=MACH_HIGHLIGHT_COLS)
-    _add_table("Manufacturing Orders", mfg_out)
+    _add_table("GP Orders", mfg_out)
+    _add_table("Consolidated order", consolidated_out)
 
     buf = io.BytesIO()
     buf.write(pdf.output())
@@ -390,6 +408,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             "RC Product Name": r["pname"],
             "Current Stock": r["stk"],
             "Order": r["suggested"],
+            "Avg Monthly Sales": r["amonthly"],
         }
 
     for rc_key, shortfall in machining_shortfall_by_rc.items():
@@ -400,6 +419,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
                 "RC Product Name": rc_lookup.get(rc_key, rc_key),
                 "Current Stock": rc_stock_lookup.get(rc_key, 0),
                 "Order": shortfall,
+                "Avg Monthly Sales": 0.0,
             }
 
     mfg_rows = list(mfg_order_map.values())
@@ -408,6 +428,37 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
     mfg_out = pd.DataFrame(mfg_rows)
     if not mfg_out.empty:
         mfg_out = mfg_out[mfg_out["Order"] > 0].sort_values("Order", ascending=False)
-    excel_buf = _build_excel(mach_out, mfg_out)
-    pdf_buf = _build_pdf(mach_out, mfg_out, today)
+    consolidated_rows = []
+    for _, row in mach_out.iterrows():
+        consolidated_rows.append(
+            {
+                "Product name": row["Product Name"],
+                "Stock": row["Product Stock"],
+                "RC Stock": row["RC Stock"],
+                "M/C Order": row["Order"],
+                "Manufacturing Order": "",
+                "RC required": row["RC Required"],
+                "Avg Sales": row["Avg Monthly Sales"],
+            }
+        )
+    for _, row in mfg_out.iterrows():
+        consolidated_rows.append(
+            {
+                "Product name": row["RC Product Name"],
+                "Stock": row["Current Stock"],
+                "RC Stock": "",
+                "M/C Order": "",
+                "Manufacturing Order": row["Order"],
+                "RC required": "",
+                "Avg Sales": row["Avg Monthly Sales"] if "Avg Monthly Sales" in row else "",
+            }
+        )
+
+    consolidated_out = pd.DataFrame(consolidated_rows)
+    if not consolidated_out.empty:
+        consolidated_out["_sort"] = pd.to_numeric(consolidated_out["M/C Order"], errors="coerce").fillna(0) + pd.to_numeric(consolidated_out["Manufacturing Order"], errors="coerce").fillna(0)
+        consolidated_out = consolidated_out.sort_values(["_sort", "Product name"], ascending=[False, True]).drop(columns=["_sort"])
+
+    excel_buf = _build_excel(mach_out, mfg_out, consolidated_out)
+    pdf_buf = _build_pdf(mach_out, mfg_out, consolidated_out, today)
     return excel_buf, pdf_buf, mach_out, mfg_out, today

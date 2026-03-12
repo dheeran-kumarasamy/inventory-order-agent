@@ -141,7 +141,7 @@ def run_report():
             f"| | Items | Total Units |\n"
             f"|---|---|---|\n"
             f"| 🔧 Machining Orders | {len(mach_df)} | {total_mach} |\n"
-            f"| 🏭 Manufacturing Orders (RC) | {len(mfg_df)} | {total_mfg} |"
+            f"| 🏭 GP Orders | {len(mfg_df)} | {total_mfg} |"
         )
     except Exception as e:
         return f"❌ Error: {_format_exception(e)}"
@@ -159,8 +159,8 @@ def answer_question(question):
         if "machining" in q:
             return f"There are **{len(mach_df)} machining orders** in today's report."
         if any(w in q for w in ["manufacturing", "rc", "rough casting"]):
-            return f"There are **{len(mfg_df)} manufacturing (RC) orders** in today's report."
-        return f"Today's report has **{len(mach_df)} machining orders** and **{len(mfg_df)} manufacturing orders**."
+            return f"There are **{len(mfg_df)} GP orders** in today's report."
+        return f"Today's report has **{len(mach_df)} machining orders** and **{len(mfg_df)} GP orders**."
 
     if any(w in q for w in ["highest", "most", "critical", "top"]) and any(w in q for w in ["order", "items", "products"]):
         all_df = pd.concat([
@@ -178,13 +178,13 @@ def answer_question(question):
         return (
             f"**Total units to order today:**\n\n"
             f"- 🔧 Machining: **{int(mach_df['Order'].sum())} units**\n"
-            f"- 🏭 Manufacturing: **{int(mfg_df['Order'].sum())} units**"
+            f"- 🏭 GP: **{int(mfg_df['Order'].sum())} units**"
         )
 
     return (
         "I can answer questions like:\n"
         "- *How many machining orders?*\n"
-        "- *How many manufacturing orders?*\n"
+        "- *How many GP orders?*\n"
         "- *Show top critical items*\n"
         "- *Total units to order?*"
     )
