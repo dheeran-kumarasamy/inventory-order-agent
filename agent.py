@@ -1,14 +1,19 @@
 import io
+import math
 import re
 from datetime import date
 
 import pandas as pd
 from fpdf import FPDF
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Alignment, PatternFill
 
 HIGHLIGHT_FILL = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")
-MACH_HIGHLIGHT_COLS = {"Product Name", "RC Stock", "Suggested Order Qty"}
+CENTER = Alignment(horizontal="center")
+MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Suggested Order Qty"}
+TEXT_COL_W = 40    # Excel column width (chars) for text columns
+NUM_COL_W  = 14   # Excel column width (chars) for numeric columns
+ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
 
@@ -61,23 +66,45 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     ws_sum.append(["Machining Units", int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0])
     ws_sum.append(["Manufacturing Units", int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0])
 
-    # Machining sheet with column highlighting
-    ws_mach = wb.create_sheet("Machining Orders")
-    mach_cols = list(mach_out.columns)
-    ws_mach.append(mach_cols)
-    for _, row in mach_out.iterrows():
-        ws_mach.append(list(row.values))
-    mach_col_idx = {c: i + 1 for i, c in enumerate(mach_cols)}
-    for col_name in MACH_HIGHLIGHT_COLS:
-        if col_name in mach_col_idx:
-            cidx = mach_col_idx[col_name]
-            for rnum in range(1, len(mach_out) + 2):  # 1 = header row
-                ws_mach.cell(row=rnum, column=cidx).fill = HIGHLIGHT_FILL
+        def _apply_sheet(ws, df, highlight_cols):
+            cols = list(df.columns)
+            col_idx = {c: i + 1 for i, c in enumerate(cols)}
+            numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-    ws_mfg = wb.create_sheet("Manufacturing Orders")
-    ws_mfg.append(list(mfg_out.columns))
-    for _, row in mfg_out.iterrows():
-        ws_mfg.append(list(row.values))
+            # Set column widths
+            for c in cols:
+                letter = ws.cell(row=1, column=col_idx[c]).column_letter
+                ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
+
+            # Write header
+            ws.append(cols)
+            ws.row_dimensions[1].height = ROW_H_PER_LINE
+
+            # Write data rows
+            for ri, (_, row) in enumerate(df.iterrows(), start=2):
+                ws.append(list(row.values))
+                max_lines = 1
+                for c in cols:
+                    if c not in numeric_cols:
+                        val = str(row[c]) if pd.notna(row[c]) else ""
+                        lines = math.ceil(len(val) / TEXT_COL_W) if val else 1
+                        max_lines = max(max_lines, lines)
+                ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
+
+            # Apply styles
+            for rnum in range(1, len(df) + 2):
+                for c in cols:
+                    cidx = col_idx[c]
+                    cell = ws.cell(row=rnum, column=cidx)
+                    if c in highlight_cols:
+                        cell.fill = HIGHLIGHT_FILL
+                    if c in numeric_cols:
+                        cell.alignment = CENTER
+                    else:
+                        cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
+
+        _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
+        _apply_sheet(wb.create_sheet("Manufacturing Orders"), mfg_out, set())
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -202,11 +229,11 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
                     pdf.set_fill_color(255, 255, 255)
 
                 if c in numeric_cols and not is_header:
-                    # Numeric data: right-aligned, vertically centered, no wrap
+                    # Numeric data: center-aligned, vertically centered, no wrap
                     y_off = (row_h - LINE_H) / 2
                     pdf.set_xy(x, y_start + y_off)
                     pdf.set_font("Helvetica", style, FONT_SIZE)
-                    pdf.cell(w, LINE_H, txt, border=0, align="R")
+                    pdf.cell(w, LINE_H, txt, border=0, align="C")
                 else:
                     # Text / header: left-aligned with word wrap
                     pdf.set_xy(x, y_start)
@@ -294,10 +321,10 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             suggested = r["suggested"]
         mach_rows.append(
             {
-                "Product Name": pname,
+                    "Product Name": pname,
                 "Product Stock": r["stk"],
                 "Avg Monthly Sales": r["amonthly"],
-                "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
+                    "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
                 "RC Stock": rc_available if rc_available is not None else "N/A",
                 "Suggested Order Qty": suggested,
             }
@@ -307,7 +334,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
     for r in enrich(mfg_df, mfg_lead):
         mfg_rows.append(
             {
-                "RC Product Name": r["pname"],
+                    "RC Product Name": r["pname"],
                 "Current Stock": r["stk"],
                 "Suggested Order Qty": r["suggested"],
             }
