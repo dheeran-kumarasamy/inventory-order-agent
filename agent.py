@@ -312,7 +312,6 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
     for label, val in [
         ("Machining Items", len(mach_out)),
         ("GP Items", len(mfg_out)),
-        ("Consolidated Items", len(consolidated_out)),
         ("Machining Units", total_mach),
         ("GP Units", total_mfg),
     ]:
