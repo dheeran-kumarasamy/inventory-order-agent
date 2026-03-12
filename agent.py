@@ -6,15 +6,20 @@ from datetime import date
 import pandas as pd
 from fpdf import FPDF
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 
 HIGHLIGHT_FILL = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")
-CENTER = Alignment(horizontal="center")
+HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
+ALT_ROW_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+CENTER = Alignment(horizontal="center", vertical="center")
 MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Order"}
-TEXT_COL_W = 40    # Excel column width (chars) for text columns
-NUM_COL_W  = 14   # Excel column width (chars) for numeric columns
+NAME_COL_W = 40    # Excel column width for product name columns
+DATA_COL_W = 15    # Excel column width for stock/qty/sales columns
 ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
-FIXED_WIDTH_15_COLS = {
+NAME_COLS = {"Product Name", "RC Required", "RC Product Name"}
+DATA_COLS = {
     "Product Stock",
     "Avg Monthly Sales",
     "RC Stock",
@@ -78,40 +83,54 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
         col_idx = {c: i + 1 for i, c in enumerate(cols)}
         numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-        # Set column widths
+        # Set column widths: name cols = 40, data cols = 15
         for c in cols:
             letter = ws.cell(row=1, column=col_idx[c]).column_letter
-            if c in FIXED_WIDTH_15_COLS:
-                ws.column_dimensions[letter].width = 15
+            if c in NAME_COLS:
+                ws.column_dimensions[letter].width = NAME_COL_W
             else:
-                ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
+                ws.column_dimensions[letter].width = DATA_COL_W
 
         # Write header
         ws.append(cols)
-        ws.row_dimensions[1].height = ROW_H_PER_LINE
+        ws.row_dimensions[1].height = ROW_H_PER_LINE * 1.2
 
         # Write data rows
         for ri, (_, row) in enumerate(df.iterrows(), start=2):
             ws.append(list(row.values))
             max_lines = 1
             for c in cols:
-                if c not in numeric_cols:
+                if c in NAME_COLS:
                     val = str(row[c]) if pd.notna(row[c]) else ""
-                    lines = math.ceil(len(val) / TEXT_COL_W) if val else 1
+                    lines = math.ceil(len(val) / NAME_COL_W) if val else 1
                     max_lines = max(max_lines, lines)
             ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
 
         # Apply styles
         for rnum in range(1, len(df) + 2):
+            is_header = rnum == 1
+            is_even_data = not is_header and (rnum % 2 == 0)
             for c in cols:
                 cidx = col_idx[c]
                 cell = ws.cell(row=rnum, column=cidx)
-                if c in highlight_cols:
-                    cell.fill = HIGHLIGHT_FILL
-                if c in numeric_cols:
-                    cell.alignment = CENTER
+                # Bold header with blue background
+                if is_header:
+                    cell.font = HEADER_FONT
+                    cell.fill = HEADER_FILL
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 else:
-                    cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
+                    # Alternating row colors (highlight cols take priority)
+                    if c in highlight_cols:
+                        cell.fill = HIGHLIGHT_FILL
+                    elif is_even_data:
+                        cell.fill = ALT_ROW_FILL
+                    else:
+                        cell.fill = WHITE_FILL
+                    # Alignment
+                    if c in numeric_cols:
+                        cell.alignment = CENTER
+                    else:
+                        cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
 
     _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
     _apply_sheet(wb.create_sheet("Manufacturing Orders"), mfg_out, set())
@@ -183,31 +202,24 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
         avail = pdf.w - pdf.l_margin - pdf.r_margin
         numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-        # Numeric col widths: sized to the max data value width (not header)
+        # Column widths: name cols get proportional share, data cols get fixed width
         pdf.set_font("Helvetica", "", FONT_SIZE)
         col_widths = {}
+        data_w = pdf.get_string_width("0" * 15) + PAD * 2
         for c in cols:
-            if c in numeric_cols:
-                max_w = max(
-                    (pdf.get_string_width(str(v)) for v in df[c] if pd.notna(v)),
-                    default=pdf.get_string_width("0"),
-                )
-                col_widths[c] = max_w + PAD * 2
+            if c in DATA_COLS:
+                col_widths[c] = data_w
 
-        # Enforce fixed width-equivalent for specific columns
-        fixed_w = pdf.get_string_width("0" * 15) + PAD * 2
-        for c in cols:
-            if c in FIXED_WIDTH_15_COLS:
-                col_widths[c] = fixed_w
+        # Distribute remaining width to name/text columns
+        fixed_total = sum(col_widths.get(c, 0) for c in cols)
+        name_cols_list = [c for c in cols if c not in col_widths]
+        remaining = avail - fixed_total
+        if name_cols_list:
+            per_name = max(remaining / len(name_cols_list), 25)
+            for c in name_cols_list:
+                col_widths[c] = per_name
 
-        # Distribute remaining width to text columns
-        numeric_total = sum(col_widths.get(c, 0) for c in cols)
-        text_cols = [c for c in cols if c not in numeric_cols]
-        remaining = avail - numeric_total
-        if text_cols:
-            per_text = max(remaining / len(text_cols), 25)
-            for c in text_cols:
-                col_widths[c] = per_text
+        row_counter = [0]  # track row index for alternating colors
 
         def _draw_row(values, is_header=False):
             x_start = pdf.l_margin
@@ -230,30 +242,48 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
                 pdf.add_page()
                 y_start = pdf.get_y()
 
+            # Determine row background color
+            if is_header:
+                bg = (68, 114, 196)    # blue header
+            elif row_counter[0] % 2 == 0:
+                bg = (217, 226, 243)   # light blue alternating
+            else:
+                bg = (255, 255, 255)   # white
+
+            if not is_header:
+                row_counter[0] += 1
+
             # Draw each cell
             for i, c in enumerate(cols):
                 txt = str(values[i]) if values[i] is not None else ""
                 w = col_widths[c]
                 x = x_start + sum(col_widths[cols[j]] for j in range(i))
-                is_highlighted = c in highlight_cols
+                is_highlighted = c in highlight_cols and not is_header
 
-                # Fill highlight background
+                # Fill cell background
                 if is_highlighted:
-                    pdf.set_fill_color(255, 230, 153)  # light yellow
-                    pdf.rect(x, y_start, w, row_h, style="F")
+                    pdf.set_fill_color(255, 230, 153)  # yellow highlight
                 else:
-                    pdf.set_fill_color(255, 255, 255)
+                    pdf.set_fill_color(*bg)
+                pdf.rect(x, y_start, w, row_h, style="F")
 
-                if c in numeric_cols and not is_header:
-                    # Numeric data: center-aligned, vertically centered, no wrap
+                if is_header:
+                    # Bold white text, centered
+                    pdf.set_xy(x, y_start)
+                    pdf.set_font("Helvetica", "B", FONT_SIZE)
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.multi_cell(w, LINE_H, txt, border=0, align="C")
+                    pdf.set_text_color(0, 0, 0)
+                elif c in DATA_COLS:
+                    # Data columns: center-aligned, vertically centered
                     y_off = (row_h - LINE_H) / 2
                     pdf.set_xy(x, y_start + y_off)
-                    pdf.set_font("Helvetica", style, FONT_SIZE)
+                    pdf.set_font("Helvetica", "", FONT_SIZE)
                     pdf.cell(w, LINE_H, txt, border=0, align="C")
                 else:
-                    # Text / header: left-aligned with word wrap
+                    # Name/text columns: left-aligned with word wrap
                     pdf.set_xy(x, y_start)
-                    pdf.set_font("Helvetica", style, FONT_SIZE)
+                    pdf.set_font("Helvetica", "", FONT_SIZE)
                     pdf.multi_cell(w, LINE_H, txt, border=0, align="L")
 
                 # Draw cell border rectangle
