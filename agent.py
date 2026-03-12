@@ -5,6 +5,10 @@ from datetime import date
 import pandas as pd
 from fpdf import FPDF
 from openpyxl import Workbook
+from openpyxl.styles import PatternFill
+
+HIGHLIGHT_FILL = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")
+MACH_HIGHLIGHT_COLS = {"Product Name", "RC Stock", "Suggested Order Qty"}
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
 
@@ -57,10 +61,18 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     ws_sum.append(["Machining Units", int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0])
     ws_sum.append(["Manufacturing Units", int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0])
 
+    # Machining sheet with column highlighting
     ws_mach = wb.create_sheet("Machining Orders")
-    ws_mach.append(list(mach_out.columns))
+    mach_cols = list(mach_out.columns)
+    ws_mach.append(mach_cols)
     for _, row in mach_out.iterrows():
         ws_mach.append(list(row.values))
+    mach_col_idx = {c: i + 1 for i, c in enumerate(mach_cols)}
+    for col_name in MACH_HIGHLIGHT_COLS:
+        if col_name in mach_col_idx:
+            cidx = mach_col_idx[col_name]
+            for rnum in range(1, len(mach_out) + 2):  # 1 = header row
+                ws_mach.cell(row=rnum, column=cidx).fill = HIGHLIGHT_FILL
 
     ws_mfg = wb.create_sheet("Manufacturing Orders")
     ws_mfg.append(list(mfg_out.columns))
@@ -120,7 +132,8 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
                 line = test
         return lines
 
-    def _add_table(title, df):
+    def _add_table(title, df, highlight_cols=None):
+        highlight_cols = highlight_cols or set()
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 13)
         pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
@@ -179,6 +192,14 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
                 txt = str(values[i]) if values[i] is not None else ""
                 w = col_widths[c]
                 x = x_start + sum(col_widths[cols[j]] for j in range(i))
+                is_highlighted = c in highlight_cols
+
+                # Fill highlight background
+                if is_highlighted:
+                    pdf.set_fill_color(255, 230, 153)  # light yellow
+                    pdf.rect(x, y_start, w, row_h, style="F")
+                else:
+                    pdf.set_fill_color(255, 255, 255)
 
                 if c in numeric_cols and not is_header:
                     # Numeric data: right-aligned, vertically centered, no wrap
@@ -204,7 +225,7 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
             vals = [row[c] if pd.notna(row[c]) else "" for c in cols]
             _draw_row(vals)
 
-    _add_table("Machining Orders", mach_out)
+    _add_table("Machining Orders", mach_out, highlight_cols=MACH_HIGHLIGHT_COLS)
     _add_table("Manufacturing Orders", mfg_out)
 
     buf = io.BytesIO()
@@ -274,14 +295,10 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         mach_rows.append(
             {
                 "Product Name": pname,
-                "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
-                "RC Stock Available": rc_available if rc_available is not None else "N/A",
-                "Current Stock": r["stk"],
-                "Reorder Level": r["reorder"],
-                "Shortage": r["shortage"],
+                "Product Stock": r["stk"],
                 "Avg Monthly Sales": r["amonthly"],
-                "Avg Daily Sales": r["adaily"],
-                "Machining Lead Time (Days)": mach_lead,
+                "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
+                "RC Stock": rc_available if rc_available is not None else "N/A",
                 "Suggested Order Qty": suggested,
             }
         )
@@ -292,17 +309,12 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             {
                 "RC Product Name": r["pname"],
                 "Current Stock": r["stk"],
-                "Reorder Level": r["reorder"],
-                "Shortage": r["shortage"],
-                "Avg Monthly Sales": r["amonthly"],
-                "Avg Daily Sales": r["adaily"],
-                "Manufacturing Lead Time (Days)": mfg_lead,
                 "Suggested Order Qty": r["suggested"],
             }
         )
 
-    mach_out = pd.DataFrame(mach_rows).sort_values("Shortage", ascending=False)
-    mfg_out = pd.DataFrame(mfg_rows).sort_values("Shortage", ascending=False)
+    mach_out = pd.DataFrame(mach_rows).sort_values("Suggested Order Qty", ascending=False)
+    mfg_out = pd.DataFrame(mfg_rows).sort_values("Suggested Order Qty", ascending=False)
     excel_buf = _build_excel(mach_out, mfg_out)
     pdf_buf = _build_pdf(mach_out, mfg_out, today)
     return excel_buf, pdf_buf, mach_out, mfg_out, today
