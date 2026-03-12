@@ -14,6 +14,13 @@ MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Order"}
 TEXT_COL_W = 40    # Excel column width (chars) for text columns
 NUM_COL_W  = 14   # Excel column width (chars) for numeric columns
 ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
+FIXED_WIDTH_15_COLS = {
+    "Product Stock",
+    "Avg Monthly Sales",
+    "RC Stock",
+    "Order",
+    "Current Stock",
+}
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
 
@@ -74,7 +81,10 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
         # Set column widths
         for c in cols:
             letter = ws.cell(row=1, column=col_idx[c]).column_letter
-            ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
+            if c in FIXED_WIDTH_15_COLS:
+                ws.column_dimensions[letter].width = 15
+            else:
+                ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
 
         # Write header
         ws.append(cols)
@@ -183,6 +193,12 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
                     default=pdf.get_string_width("0"),
                 )
                 col_widths[c] = max_w + PAD * 2
+
+        # Enforce fixed width-equivalent for specific columns
+        fixed_w = pdf.get_string_width("0" * 15) + PAD * 2
+        for c in cols:
+            if c in FIXED_WIDTH_15_COLS:
+                col_widths[c] = fixed_w
 
         # Distribute remaining width to text columns
         numeric_total = sum(col_widths.get(c, 0) for c in cols)
