@@ -198,9 +198,11 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: 
     def _add_table(title, df, highlight_cols=None):
         highlight_cols = highlight_cols or set()
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 13)
-        pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
         if df.empty:
+            pdf.set_font("Helvetica", "B", 18)
+            pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
+            pdf.set_font("Helvetica", "B", 13)
+            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", "", 10)
             pdf.cell(0, 8, "No items.", new_x="LMARGIN", new_y="NEXT")
             return
@@ -238,6 +240,15 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: 
 
         row_counter = [0]  # track row index for alternating colors
 
+        def _draw_page_header():
+            pdf.set_font("Helvetica", "B", 18)
+            pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.cell(0, 6, f"Generated: {report_date.strftime('%d %B %Y')}", new_x="LMARGIN", new_y="NEXT", align="C")
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 13)
+            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
+
         def _draw_row(values, is_header=False):
             x_start = pdf.l_margin
             y_start = pdf.get_y()
@@ -257,6 +268,8 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: 
             # Page break if row won't fit
             if y_start + row_h > pdf.h - 15:
                 pdf.add_page()
+                _draw_page_header()
+                _draw_row(cols, is_header=True)
                 y_start = pdf.get_y()
 
             # Determine row background color
@@ -308,6 +321,7 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: 
 
             pdf.set_y(y_start + row_h)
 
+        _draw_page_header()
         # Header row
         _draw_row(cols, is_header=True)
         # Data rows
@@ -437,8 +451,8 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
                 "RC Stock": row["RC Stock"],
                 "M/C Order": row["Order"],
                 "Manufacturing Order": "",
-                "RC required": row["RC Required"],
                 "Avg Sales": row["Avg Monthly Sales"],
+                "RC required": row["RC Required"],
             }
         )
     for _, row in mfg_out.iterrows():
@@ -449,8 +463,8 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
                 "RC Stock": "",
                 "M/C Order": "",
                 "Manufacturing Order": row["Order"],
-                "RC required": "",
                 "Avg Sales": row["Avg Monthly Sales"] if "Avg Monthly Sales" in row else "",
+                "RC required": "",
             }
         )
 
