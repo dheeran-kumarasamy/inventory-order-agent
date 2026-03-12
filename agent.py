@@ -75,7 +75,11 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
 
 def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date) -> io.BytesIO:
     pdf = FPDF(orientation="L", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=False)
+
+    FONT_SIZE = 7
+    LINE_H = 4
+    PAD = 2
 
     # --- Summary Page ---
     pdf.add_page()
@@ -99,6 +103,23 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
         pdf.cell(80, 7, label, border=1)
         pdf.cell(40, 7, str(val), border=1, new_x="LMARGIN", new_y="NEXT")
 
+    def _lines_needed(text, width, font_style=""):
+        pdf.set_font("Helvetica", font_style, FONT_SIZE)
+        if not text:
+            return 1
+        words = text.split()
+        if not words:
+            return 1
+        lines, line = 1, ""
+        for w in words:
+            test = f"{line} {w}".strip()
+            if pdf.get_string_width(test) > width - PAD:
+                lines += 1
+                line = w
+            else:
+                line = test
+        return lines
+
     def _add_table(title, df):
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 13)
@@ -107,22 +128,81 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
             pdf.set_font("Helvetica", "", 10)
             pdf.cell(0, 8, "No items.", new_x="LMARGIN", new_y="NEXT")
             return
+
         cols = list(df.columns)
-        n = len(cols)
         avail = pdf.w - pdf.l_margin - pdf.r_margin
-        col_w = avail / n
-        # Header
-        pdf.set_font("Helvetica", "B", 7)
+        numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
+
+        # Numeric col widths: sized to the max data value width (not header)
+        pdf.set_font("Helvetica", "", FONT_SIZE)
+        col_widths = {}
         for c in cols:
-            pdf.cell(col_w, 7, str(c)[:22], border=1)
-        pdf.ln()
-        # Rows
-        pdf.set_font("Helvetica", "", 7)
+            if c in numeric_cols:
+                max_w = max(
+                    (pdf.get_string_width(str(v)) for v in df[c] if pd.notna(v)),
+                    default=pdf.get_string_width("0"),
+                )
+                col_widths[c] = max_w + PAD * 2
+
+        # Distribute remaining width to text columns
+        numeric_total = sum(col_widths.get(c, 0) for c in cols)
+        text_cols = [c for c in cols if c not in numeric_cols]
+        remaining = avail - numeric_total
+        if text_cols:
+            per_text = max(remaining / len(text_cols), 25)
+            for c in text_cols:
+                col_widths[c] = per_text
+
+        def _draw_row(values, is_header=False):
+            x_start = pdf.l_margin
+            y_start = pdf.get_y()
+            style = "B" if is_header else ""
+            pdf.set_font("Helvetica", style, FONT_SIZE)
+
+            # Pre-calculate row height from tallest cell
+            max_lines = 1
+            for i, c in enumerate(cols):
+                txt = str(values[i]) if values[i] is not None else ""
+                w = col_widths[c]
+                nl = _lines_needed(txt, w, style)
+                if nl > max_lines:
+                    max_lines = nl
+            row_h = max(max_lines * LINE_H, LINE_H)
+
+            # Page break if row won't fit
+            if y_start + row_h > pdf.h - 15:
+                pdf.add_page()
+                y_start = pdf.get_y()
+
+            # Draw each cell
+            for i, c in enumerate(cols):
+                txt = str(values[i]) if values[i] is not None else ""
+                w = col_widths[c]
+                x = x_start + sum(col_widths[cols[j]] for j in range(i))
+
+                if c in numeric_cols and not is_header:
+                    # Numeric data: right-aligned, vertically centered, no wrap
+                    y_off = (row_h - LINE_H) / 2
+                    pdf.set_xy(x, y_start + y_off)
+                    pdf.set_font("Helvetica", style, FONT_SIZE)
+                    pdf.cell(w, LINE_H, txt, border=0, align="R")
+                else:
+                    # Text / header: left-aligned with word wrap
+                    pdf.set_xy(x, y_start)
+                    pdf.set_font("Helvetica", style, FONT_SIZE)
+                    pdf.multi_cell(w, LINE_H, txt, border=0, align="L")
+
+                # Draw cell border rectangle
+                pdf.rect(x, y_start, w, row_h)
+
+            pdf.set_y(y_start + row_h)
+
+        # Header row
+        _draw_row(cols, is_header=True)
+        # Data rows
         for _, row in df.iterrows():
-            for c in cols:
-                txt = str(row[c]) if pd.notna(row[c]) else ""
-                pdf.cell(col_w, 6, txt[:24], border=1)
-            pdf.ln()
+            vals = [row[c] if pd.notna(row[c]) else "" for c in cols]
+            _draw_row(vals)
 
     _add_table("Machining Orders", mach_out)
     _add_table("Manufacturing Orders", mfg_out)
@@ -148,6 +228,10 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
 
     all_rc = stock[stock["ProductName"].str.contains(r"\bRC\b", case=False, na=False)]
     rc_lookup = {n.upper(): n for n in all_rc["ProductName"]}
+    rc_stock_lookup = {
+        row["ProductName"].upper(): int(row["StockLevel"])
+        for _, row in all_rc.iterrows()
+    }
 
     def enrich(df, lead):
         rows = []
@@ -178,20 +262,27 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         pname = r["pname"]
         is_vp = "V-PULLEY" in pname.upper()
         rc = None
+        rc_available = None
         if is_vp:
             od, grooves, ptype = extract_parts(pname)
             rc = find_rc(od, grooves, ptype, rc_lookup)
+        if rc:
+            rc_available = rc_stock_lookup.get(rc.upper(), 0)
+            suggested = min(r["suggested"], rc_available)
+        else:
+            suggested = r["suggested"]
         mach_rows.append(
             {
                 "Product Name": pname,
                 "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
+                "RC Stock Available": rc_available if rc_available is not None else "N/A",
                 "Current Stock": r["stk"],
                 "Reorder Level": r["reorder"],
                 "Shortage": r["shortage"],
                 "Avg Monthly Sales": r["amonthly"],
                 "Avg Daily Sales": r["adaily"],
                 "Machining Lead Time (Days)": mach_lead,
-                "Suggested Order Qty": r["suggested"],
+                "Suggested Order Qty": suggested,
             }
         )
 
