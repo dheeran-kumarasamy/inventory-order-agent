@@ -18,7 +18,7 @@ MACH_HIGHLIGHT_COLS = set()
 NAME_COL_W = 40    # Excel column width for product name columns
 DATA_COL_W = 15    # Excel column width for stock/qty/sales columns
 ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
-NAME_COLS = {"Product Name", "RC Required", "RC Product Name", "Product name", "RC required"}
+NAME_COLS = {"Product Name", "RC Required", "RC Product Name", "Product name"}
 DATA_COLS = {
     "Product Stock",
     "Avg Monthly Sales",
@@ -71,7 +71,52 @@ def find_rc(od, grooves, ptype, rc_lookup):
     return matches[0] if matches else None
 
 
-def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: pd.DataFrame) -> io.BytesIO:
+def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: set[str]):
+    cols = list(df.columns)
+    col_idx = {c: i + 1 for i, c in enumerate(cols)}
+    numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
+
+    for c in cols:
+        letter = ws.cell(row=1, column=col_idx[c]).column_letter
+        ws.column_dimensions[letter].width = NAME_COL_W if c in NAME_COLS else DATA_COL_W
+
+    ws.append(cols)
+    ws.row_dimensions[1].height = ROW_H_PER_LINE * 1.2
+
+    for ri, (_, row) in enumerate(df.iterrows(), start=2):
+        ws.append(list(row.values))
+        max_lines = 1
+        for c in cols:
+            if c in NAME_COLS:
+                val = str(row[c]) if pd.notna(row[c]) else ""
+                lines = math.ceil(len(val) / NAME_COL_W) if val else 1
+                max_lines = max(max_lines, lines)
+        ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
+
+    for rnum in range(1, len(df) + 2):
+        is_header = rnum == 1
+        is_even_data = not is_header and (rnum % 2 == 0)
+        for c in cols:
+            cidx = col_idx[c]
+            cell = ws.cell(row=rnum, column=cidx)
+            if is_header:
+                cell.font = HEADER_FONT
+                cell.fill = HEADER_FILL
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            else:
+                if c in highlight_cols:
+                    cell.fill = HIGHLIGHT_FILL
+                elif is_even_data:
+                    cell.fill = ALT_ROW_FILL
+                else:
+                    cell.fill = WHITE_FILL
+                if c in numeric_cols:
+                    cell.alignment = CENTER
+                else:
+                    cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
+
+
+def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -79,67 +124,11 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out
     ws_sum.append(["Metric", "Value"])
     ws_sum.append(["Machining Items", len(mach_out)])
     ws_sum.append(["GP Items", len(mfg_out)])
-    ws_sum.append(["Consolidated Items", len(consolidated_out)])
     ws_sum.append(["Machining Units", int(mach_out["Order"].sum()) if len(mach_out) else 0])
     ws_sum.append(["GP Units", int(mfg_out["Order"].sum()) if len(mfg_out) else 0])
 
-    def _apply_sheet(ws, df, highlight_cols):
-        cols = list(df.columns)
-        col_idx = {c: i + 1 for i, c in enumerate(cols)}
-        numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
-
-        # Set column widths: name cols = 40, data cols = 15
-        for c in cols:
-            letter = ws.cell(row=1, column=col_idx[c]).column_letter
-            if c in NAME_COLS:
-                ws.column_dimensions[letter].width = NAME_COL_W
-            else:
-                ws.column_dimensions[letter].width = DATA_COL_W
-
-        # Write header
-        ws.append(cols)
-        ws.row_dimensions[1].height = ROW_H_PER_LINE * 1.2
-
-        # Write data rows
-        for ri, (_, row) in enumerate(df.iterrows(), start=2):
-            ws.append(list(row.values))
-            max_lines = 1
-            for c in cols:
-                if c in NAME_COLS:
-                    val = str(row[c]) if pd.notna(row[c]) else ""
-                    lines = math.ceil(len(val) / NAME_COL_W) if val else 1
-                    max_lines = max(max_lines, lines)
-            ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
-
-        # Apply styles
-        for rnum in range(1, len(df) + 2):
-            is_header = rnum == 1
-            is_even_data = not is_header and (rnum % 2 == 0)
-            for c in cols:
-                cidx = col_idx[c]
-                cell = ws.cell(row=rnum, column=cidx)
-                # Bold header with blue background
-                if is_header:
-                    cell.font = HEADER_FONT
-                    cell.fill = HEADER_FILL
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                else:
-                    # Alternating row colors (highlight cols take priority)
-                    if c in highlight_cols:
-                        cell.fill = HIGHLIGHT_FILL
-                    elif is_even_data:
-                        cell.fill = ALT_ROW_FILL
-                    else:
-                        cell.fill = WHITE_FILL
-                    # Alignment
-                    if c in numeric_cols:
-                        cell.alignment = CENTER
-                    else:
-                        cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
-
-    _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
-    _apply_sheet(wb.create_sheet("GP Orders"), mfg_out, set())
-    _apply_sheet(wb.create_sheet("Consolidated order"), consolidated_out, set())
+    _apply_excel_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
+    _apply_excel_sheet(wb.create_sheet("GP Orders"), mfg_out, set())
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -147,7 +136,159 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out
     return buf
 
 
-def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: pd.DataFrame, report_date: date) -> io.BytesIO:
+def _build_consolidated_excel(consolidated_out: pd.DataFrame) -> io.BytesIO:
+    wb = Workbook()
+    wb.remove(wb.active)
+    _apply_excel_sheet(wb.create_sheet("Consolidated order"), consolidated_out, set())
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _add_pdf_table(pdf: FPDF, title: str, df: pd.DataFrame, report_date: date, highlight_cols=None):
+    highlight_cols = highlight_cols or set()
+    pdf.add_page()
+    if df.empty:
+        pdf.set_font("Helvetica", "B", 18)
+        pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 8, "No items.", new_x="LMARGIN", new_y="NEXT")
+        return
+
+    FONT_SIZE = 7
+    LINE_H = 4
+    PAD = 2
+    cols = list(df.columns)
+    avail = pdf.w - pdf.l_margin - pdf.r_margin
+    numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
+
+    def _lines_needed(text, width, font_style=""):
+        pdf.set_font("Helvetica", font_style, FONT_SIZE)
+        if not text:
+            return 1
+        words = text.split()
+        if not words:
+            return 1
+        lines, line = 1, ""
+        for w in words:
+            test = f"{line} {w}".strip()
+            if pdf.get_string_width(test) > width - PAD:
+                lines += 1
+                line = w
+            else:
+                line = test
+        return lines
+
+    pdf.set_font("Helvetica", "", FONT_SIZE)
+    col_widths = {}
+    name_w = pdf.get_string_width("W" * 40) + PAD * 2
+    data_w = pdf.get_string_width("0" * 15) + PAD * 2
+    for c in cols:
+        if c in DATA_COLS:
+            col_widths[c] = data_w
+        elif c in NAME_COLS:
+            col_widths[c] = name_w
+
+    fixed_total = sum(col_widths.get(c, 0) for c in cols)
+    other_cols = [c for c in cols if c not in col_widths]
+    remaining = avail - fixed_total
+    if other_cols:
+        per_other = max(remaining / len(other_cols), 25)
+        for c in other_cols:
+            col_widths[c] = per_other
+
+    total_w = sum(col_widths.values())
+    if total_w > avail and total_w > 0:
+        scale = avail / total_w
+        for c in cols:
+            col_widths[c] = col_widths[c] * scale
+
+    row_counter = [0]
+
+    def _draw_page_header():
+        pdf.set_font("Helvetica", "B", 18)
+        pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, f"Generated: {report_date.strftime('%d %B %Y')}", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
+
+    def _draw_row(values, is_header=False):
+        x_start = pdf.l_margin
+        y_start = pdf.get_y()
+        style = "B" if is_header else ""
+        pdf.set_font("Helvetica", style, FONT_SIZE)
+
+        max_lines = 1
+        for i, c in enumerate(cols):
+            txt = str(values[i]) if values[i] is not None else ""
+            w = col_widths[c]
+            nl = _lines_needed(txt, w, style)
+            if nl > max_lines:
+                max_lines = nl
+        row_h = max(max_lines * LINE_H, LINE_H)
+
+        if y_start + row_h > pdf.h - 15:
+            pdf.add_page()
+            _draw_page_header()
+            _draw_row(cols, is_header=True)
+            y_start = pdf.get_y()
+
+        if is_header:
+            bg = (68, 114, 196)
+        elif row_counter[0] % 2 == 0:
+            bg = (217, 226, 243)
+        else:
+            bg = (255, 255, 255)
+
+        if not is_header:
+            row_counter[0] += 1
+
+        for i, c in enumerate(cols):
+            txt = str(values[i]) if values[i] is not None else ""
+            w = col_widths[c]
+            x = x_start + sum(col_widths[cols[j]] for j in range(i))
+            is_highlighted = c in highlight_cols and not is_header
+
+            if is_highlighted:
+                pdf.set_fill_color(255, 230, 153)
+            else:
+                pdf.set_fill_color(*bg)
+            pdf.rect(x, y_start, w, row_h, style="F")
+
+            if is_header:
+                pdf.set_xy(x, y_start)
+                pdf.set_font("Helvetica", "B", FONT_SIZE)
+                pdf.set_text_color(255, 255, 255)
+                pdf.multi_cell(w, LINE_H, txt, border=0, align="C")
+                pdf.set_text_color(0, 0, 0)
+            elif c in DATA_COLS:
+                y_off = (row_h - LINE_H) / 2
+                pdf.set_xy(x, y_start + y_off)
+                pdf.set_font("Helvetica", "", FONT_SIZE)
+                pdf.cell(w, LINE_H, txt, border=0, align="C")
+            else:
+                pdf.set_xy(x, y_start)
+                pdf.set_font("Helvetica", "", FONT_SIZE)
+                pdf.multi_cell(w, LINE_H, txt, border=0, align="L")
+
+            pdf.rect(x, y_start, w, row_h)
+
+        pdf.set_y(y_start + row_h)
+
+    _draw_page_header()
+    _draw_row(cols, is_header=True)
+    for _, row in df.iterrows():
+        vals = [row[c] if pd.notna(row[c]) else "" for c in cols]
+        _draw_row(vals)
+
+
+def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date) -> io.BytesIO:
     pdf = FPDF(orientation="L", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -178,160 +319,19 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, consolidated_out: 
         pdf.cell(80, 7, label, border=1)
         pdf.cell(40, 7, str(val), border=1, new_x="LMARGIN", new_y="NEXT")
 
-    def _lines_needed(text, width, font_style=""):
-        pdf.set_font("Helvetica", font_style, FONT_SIZE)
-        if not text:
-            return 1
-        words = text.split()
-        if not words:
-            return 1
-        lines, line = 1, ""
-        for w in words:
-            test = f"{line} {w}".strip()
-            if pdf.get_string_width(test) > width - PAD:
-                lines += 1
-                line = w
-            else:
-                line = test
-        return lines
+    _add_pdf_table(pdf, "Machining Orders", mach_out, report_date, highlight_cols=MACH_HIGHLIGHT_COLS)
+    _add_pdf_table(pdf, "GP Orders", mfg_out, report_date)
 
-    def _add_table(title, df, highlight_cols=None):
-        highlight_cols = highlight_cols or set()
-        pdf.add_page()
-        if df.empty:
-            pdf.set_font("Helvetica", "B", 18)
-            pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", "", 10)
-            pdf.cell(0, 8, "No items.", new_x="LMARGIN", new_y="NEXT")
-            return
+    buf = io.BytesIO()
+    buf.write(pdf.output())
+    buf.seek(0)
+    return buf
 
-        cols = list(df.columns)
-        avail = pdf.w - pdf.l_margin - pdf.r_margin
-        numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-        # Column widths: name cols = 40, data cols = 15 (scaled down only if page is too narrow)
-        pdf.set_font("Helvetica", "", FONT_SIZE)
-        col_widths = {}
-        name_w = pdf.get_string_width("W" * 40) + PAD * 2
-        data_w = pdf.get_string_width("0" * 15) + PAD * 2
-        for c in cols:
-            if c in DATA_COLS:
-                col_widths[c] = data_w
-            elif c in NAME_COLS:
-                col_widths[c] = name_w
-
-        # Distribute remaining width to any other columns
-        fixed_total = sum(col_widths.get(c, 0) for c in cols)
-        name_cols_list = [c for c in cols if c not in col_widths]
-        remaining = avail - fixed_total
-        if name_cols_list:
-            per_name = max(remaining / len(name_cols_list), 25)
-            for c in name_cols_list:
-                col_widths[c] = per_name
-
-        # If fixed widths exceed available width, scale all columns proportionally.
-        total_w = sum(col_widths.values())
-        if total_w > avail and total_w > 0:
-            scale = avail / total_w
-            for c in cols:
-                col_widths[c] = col_widths[c] * scale
-
-        row_counter = [0]  # track row index for alternating colors
-
-        def _draw_page_header():
-            pdf.set_font("Helvetica", "B", 18)
-            pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
-            pdf.set_font("Helvetica", "", 10)
-            pdf.cell(0, 6, f"Generated: {report_date.strftime('%d %B %Y')}", new_x="LMARGIN", new_y="NEXT", align="C")
-            pdf.ln(2)
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
-
-        def _draw_row(values, is_header=False):
-            x_start = pdf.l_margin
-            y_start = pdf.get_y()
-            style = "B" if is_header else ""
-            pdf.set_font("Helvetica", style, FONT_SIZE)
-
-            # Pre-calculate row height from tallest cell
-            max_lines = 1
-            for i, c in enumerate(cols):
-                txt = str(values[i]) if values[i] is not None else ""
-                w = col_widths[c]
-                nl = _lines_needed(txt, w, style)
-                if nl > max_lines:
-                    max_lines = nl
-            row_h = max(max_lines * LINE_H, LINE_H)
-
-            # Page break if row won't fit
-            if y_start + row_h > pdf.h - 15:
-                pdf.add_page()
-                _draw_page_header()
-                _draw_row(cols, is_header=True)
-                y_start = pdf.get_y()
-
-            # Determine row background color
-            if is_header:
-                bg = (68, 114, 196)    # blue header
-            elif row_counter[0] % 2 == 0:
-                bg = (217, 226, 243)   # light blue alternating
-            else:
-                bg = (255, 255, 255)   # white
-
-            if not is_header:
-                row_counter[0] += 1
-
-            # Draw each cell
-            for i, c in enumerate(cols):
-                txt = str(values[i]) if values[i] is not None else ""
-                w = col_widths[c]
-                x = x_start + sum(col_widths[cols[j]] for j in range(i))
-                is_highlighted = c in highlight_cols and not is_header
-
-                # Fill cell background
-                if is_highlighted:
-                    pdf.set_fill_color(255, 230, 153)  # yellow highlight
-                else:
-                    pdf.set_fill_color(*bg)
-                pdf.rect(x, y_start, w, row_h, style="F")
-
-                if is_header:
-                    # Bold white text, centered
-                    pdf.set_xy(x, y_start)
-                    pdf.set_font("Helvetica", "B", FONT_SIZE)
-                    pdf.set_text_color(255, 255, 255)
-                    pdf.multi_cell(w, LINE_H, txt, border=0, align="C")
-                    pdf.set_text_color(0, 0, 0)
-                elif c in DATA_COLS:
-                    # Data columns: center-aligned, vertically centered
-                    y_off = (row_h - LINE_H) / 2
-                    pdf.set_xy(x, y_start + y_off)
-                    pdf.set_font("Helvetica", "", FONT_SIZE)
-                    pdf.cell(w, LINE_H, txt, border=0, align="C")
-                else:
-                    # Name/text columns: left-aligned with word wrap
-                    pdf.set_xy(x, y_start)
-                    pdf.set_font("Helvetica", "", FONT_SIZE)
-                    pdf.multi_cell(w, LINE_H, txt, border=0, align="L")
-
-                # Draw cell border rectangle
-                pdf.rect(x, y_start, w, row_h)
-
-            pdf.set_y(y_start + row_h)
-
-        _draw_page_header()
-        # Header row
-        _draw_row(cols, is_header=True)
-        # Data rows
-        for _, row in df.iterrows():
-            vals = [row[c] if pd.notna(row[c]) else "" for c in cols]
-            _draw_row(vals)
-
-    _add_table("Machining Orders", mach_out, highlight_cols=MACH_HIGHLIGHT_COLS)
-    _add_table("GP Orders", mfg_out)
-    _add_table("Consolidated order", consolidated_out)
+def _build_consolidated_pdf(consolidated_out: pd.DataFrame, report_date: date) -> io.BytesIO:
+    pdf = FPDF(orientation="L", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    _add_pdf_table(pdf, "Consolidated order", consolidated_out, report_date)
 
     buf = io.BytesIO()
     buf.write(pdf.output())
@@ -452,7 +452,6 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
                 "M/C Order": row["Order"],
                 "Manufacturing Order": "",
                 "Avg Sales": row["Avg Monthly Sales"],
-                "RC required": row["RC Required"],
             }
         )
     for _, row in mfg_out.iterrows():
@@ -464,7 +463,6 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
                 "M/C Order": "",
                 "Manufacturing Order": row["Order"],
                 "Avg Sales": row["Avg Monthly Sales"] if "Avg Monthly Sales" in row else "",
-                "RC required": "",
             }
         )
 
@@ -473,6 +471,8 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         consolidated_out["_sort"] = pd.to_numeric(consolidated_out["M/C Order"], errors="coerce").fillna(0) + pd.to_numeric(consolidated_out["Manufacturing Order"], errors="coerce").fillna(0)
         consolidated_out = consolidated_out.sort_values(["_sort", "Product name"], ascending=[False, True]).drop(columns=["_sort"])
 
-    excel_buf = _build_excel(mach_out, mfg_out, consolidated_out)
-    pdf_buf = _build_pdf(mach_out, mfg_out, consolidated_out, today)
-    return excel_buf, pdf_buf, mach_out, mfg_out, today
+    excel_buf = _build_excel(mach_out, mfg_out)
+    pdf_buf = _build_pdf(mach_out, mfg_out, today)
+    consolidated_excel_buf = _build_consolidated_excel(consolidated_out)
+    consolidated_pdf_buf = _build_consolidated_pdf(consolidated_out, today)
+    return excel_buf, pdf_buf, consolidated_excel_buf, consolidated_pdf_buf, mach_out, mfg_out, consolidated_out, today
