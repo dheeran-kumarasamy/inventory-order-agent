@@ -66,45 +66,45 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     ws_sum.append(["Machining Units", int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0])
     ws_sum.append(["Manufacturing Units", int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0])
 
-        def _apply_sheet(ws, df, highlight_cols):
-            cols = list(df.columns)
-            col_idx = {c: i + 1 for i, c in enumerate(cols)}
-            numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
+    def _apply_sheet(ws, df, highlight_cols):
+        cols = list(df.columns)
+        col_idx = {c: i + 1 for i, c in enumerate(cols)}
+        numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
 
-            # Set column widths
+        # Set column widths
+        for c in cols:
+            letter = ws.cell(row=1, column=col_idx[c]).column_letter
+            ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
+
+        # Write header
+        ws.append(cols)
+        ws.row_dimensions[1].height = ROW_H_PER_LINE
+
+        # Write data rows
+        for ri, (_, row) in enumerate(df.iterrows(), start=2):
+            ws.append(list(row.values))
+            max_lines = 1
             for c in cols:
-                letter = ws.cell(row=1, column=col_idx[c]).column_letter
-                ws.column_dimensions[letter].width = NUM_COL_W if c in numeric_cols else TEXT_COL_W
+                if c not in numeric_cols:
+                    val = str(row[c]) if pd.notna(row[c]) else ""
+                    lines = math.ceil(len(val) / TEXT_COL_W) if val else 1
+                    max_lines = max(max_lines, lines)
+            ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
 
-            # Write header
-            ws.append(cols)
-            ws.row_dimensions[1].height = ROW_H_PER_LINE
+        # Apply styles
+        for rnum in range(1, len(df) + 2):
+            for c in cols:
+                cidx = col_idx[c]
+                cell = ws.cell(row=rnum, column=cidx)
+                if c in highlight_cols:
+                    cell.fill = HIGHLIGHT_FILL
+                if c in numeric_cols:
+                    cell.alignment = CENTER
+                else:
+                    cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
 
-            # Write data rows
-            for ri, (_, row) in enumerate(df.iterrows(), start=2):
-                ws.append(list(row.values))
-                max_lines = 1
-                for c in cols:
-                    if c not in numeric_cols:
-                        val = str(row[c]) if pd.notna(row[c]) else ""
-                        lines = math.ceil(len(val) / TEXT_COL_W) if val else 1
-                        max_lines = max(max_lines, lines)
-                ws.row_dimensions[ri].height = max(ROW_H_PER_LINE, max_lines * ROW_H_PER_LINE)
-
-            # Apply styles
-            for rnum in range(1, len(df) + 2):
-                for c in cols:
-                    cidx = col_idx[c]
-                    cell = ws.cell(row=rnum, column=cidx)
-                    if c in highlight_cols:
-                        cell.fill = HIGHLIGHT_FILL
-                    if c in numeric_cols:
-                        cell.alignment = CENTER
-                    else:
-                        cell.alignment = Alignment(horizontal="left", wrap_text=True, vertical="top")
-
-        _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
-        _apply_sheet(wb.create_sheet("Manufacturing Orders"), mfg_out, set())
+    _apply_sheet(wb.create_sheet("Machining Orders"), mach_out, MACH_HIGHLIGHT_COLS)
+    _apply_sheet(wb.create_sheet("Manufacturing Orders"), mfg_out, set())
 
     buf = io.BytesIO()
     wb.save(buf)
