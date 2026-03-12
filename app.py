@@ -25,9 +25,11 @@ with st.sidebar:
     st.markdown("### 🔗 Google Sheet")
     st.caption("Use a single Google Sheet URL with: 'software stock' + monthly tabs (e.g., June-2024)")
 
+    DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1DN1GShUruZpEkwweAj_lsQBxjO0lpwmbYk3G300VWDU/edit?usp=sharing"
+
     master_sheet_url = st.text_input(
         "Master Google Sheet URL",
-        value=st.session_state.get("master_sheet_url", ""),
+        value=st.session_state.get("master_sheet_url", DEFAULT_SHEET_URL),
         placeholder="https://docs.google.com/spreadsheets/d/...",
         key="master_sheet_url_input",
     )
