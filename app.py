@@ -133,8 +133,8 @@ def run_report():
         st.session_state["mach_df"] = mach_df
         st.session_state["mfg_df"] = mfg_df
 
-        total_mach = int(mach_df["Suggested Order Qty"].sum())
-        total_mfg = int(mfg_df["Suggested Order Qty"].sum())
+        total_mach = int(mach_df["Order"].sum())
+        total_mfg = int(mfg_df["Order"].sum())
 
         return (
             f"✅ **Report generated for {today.strftime('%d %B %Y')}**\n\n"
@@ -162,23 +162,23 @@ def answer_question(question):
             return f"There are **{len(mfg_df)} manufacturing (RC) orders** in today's report."
         return f"Today's report has **{len(mach_df)} machining orders** and **{len(mfg_df)} manufacturing orders**."
 
-    if "shortage" in q and any(w in q for w in ["highest", "most", "critical", "top"]):
+    if any(w in q for w in ["highest", "most", "critical", "top"]) and any(w in q for w in ["order", "items", "products"]):
         all_df = pd.concat([
-            mach_df[["Product Name", "Shortage", "Suggested Order Qty"]],
-            mfg_df[["RC Product Name", "Shortage", "Suggested Order Qty"]].rename(columns={"RC Product Name": "Product Name"}),
-        ]).sort_values("Shortage", ascending=False).head(5)
+            mach_df[["Product Name", "Order"]],
+            mfg_df[["RC Product Name", "Order"]].rename(columns={"RC Product Name": "Product Name"}),
+        ]).sort_values("Order", ascending=False).head(5)
 
         rows = "\n".join([
-            f"- **{r['Product Name']}** — Shortage: {int(r['Shortage'])}, Order: {int(r['Suggested Order Qty'])}"
+            f"- **{r['Product Name']}** — Order: {int(r['Order'])}"
             for _, r in all_df.iterrows()
         ])
-        return f"**Top 5 critical items by shortage:**\n\n{rows}"
+        return f"**Top 5 items by order quantity:**\n\n{rows}"
 
     if any(w in q for w in ["total units", "total order", "how many units"]):
         return (
             f"**Total units to order today:**\n\n"
-            f"- 🔧 Machining: **{int(mach_df['Suggested Order Qty'].sum())} units**\n"
-            f"- 🏭 Manufacturing: **{int(mfg_df['Suggested Order Qty'].sum())} units**"
+            f"- 🔧 Machining: **{int(mach_df['Order'].sum())} units**\n"
+            f"- 🏭 Manufacturing: **{int(mfg_df['Order'].sum())} units**"
         )
 
     return (

@@ -10,7 +10,7 @@ from openpyxl.styles import Alignment, PatternFill
 
 HIGHLIGHT_FILL = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")
 CENTER = Alignment(horizontal="center")
-MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Suggested Order Qty"}
+MACH_HIGHLIGHT_COLS = {"Product Name", "RC Required", "Order"}
 TEXT_COL_W = 40    # Excel column width (chars) for text columns
 NUM_COL_W  = 14   # Excel column width (chars) for numeric columns
 ROW_H_PER_LINE = 15  # Excel row height (pts) per wrapped line
@@ -63,8 +63,8 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
     ws_sum.append(["Metric", "Value"])
     ws_sum.append(["Machining Items", len(mach_out)])
     ws_sum.append(["Manufacturing Items", len(mfg_out)])
-    ws_sum.append(["Machining Units", int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0])
-    ws_sum.append(["Manufacturing Units", int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0])
+    ws_sum.append(["Machining Units", int(mach_out["Order"].sum()) if len(mach_out) else 0])
+    ws_sum.append(["Manufacturing Units", int(mfg_out["Order"].sum()) if len(mfg_out) else 0])
 
     def _apply_sheet(ws, df, highlight_cols):
         cols = list(df.columns)
@@ -131,8 +131,8 @@ def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "Summary", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    total_mach = int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0
-    total_mfg = int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0
+    total_mach = int(mach_out["Order"].sum()) if len(mach_out) else 0
+    total_mfg = int(mfg_out["Order"].sum()) if len(mfg_out) else 0
     for label, val in [
         ("Machining Items", len(mach_out)),
         ("Manufacturing Items", len(mfg_out)),
@@ -280,6 +280,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         row["ProductName"].upper(): int(row["StockLevel"])
         for _, row in all_rc.iterrows()
     }
+    remaining_rc_stock = dict(rc_stock_lookup)
 
     def enrich(df, lead):
         rows = []
@@ -306,6 +307,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         return rows
 
     mach_rows = []
+    machining_shortfall_by_rc = {}
     for r in enrich(mach_df, mach_lead):
         pname = r["pname"]
         is_vp = "V-PULLEY" in pname.upper()
@@ -315,33 +317,51 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             od, grooves, ptype = extract_parts(pname)
             rc = find_rc(od, grooves, ptype, rc_lookup)
         if rc:
-            rc_available = rc_stock_lookup.get(rc.upper(), 0)
+            rc_key = rc.upper()
+            rc_available = remaining_rc_stock.get(rc_key, 0)
             suggested = min(r["suggested"], rc_available)
+            remaining_rc_stock[rc_key] = max(rc_available - suggested, 0)
+            machining_shortfall = max(r["suggested"] - suggested, 0)
+            if machining_shortfall:
+                machining_shortfall_by_rc[rc_key] = machining_shortfall_by_rc.get(rc_key, 0) + machining_shortfall
         else:
             suggested = r["suggested"]
         mach_rows.append(
             {
-                    "Product Name": pname,
+                "Product Name": pname,
                 "Product Stock": r["stk"],
                 "Avg Monthly Sales": r["amonthly"],
-                    "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
+                "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
                 "RC Stock": rc_available if rc_available is not None else "N/A",
-                "Suggested Order Qty": suggested,
+                "Order": suggested,
             }
         )
 
-    mfg_rows = []
+    mfg_order_map = {}
     for r in enrich(mfg_df, mfg_lead):
-        mfg_rows.append(
-            {
-                    "RC Product Name": r["pname"],
-                "Current Stock": r["stk"],
-                "Suggested Order Qty": r["suggested"],
-            }
-        )
+        rc_key = r["pname"].upper()
+        mfg_order_map[rc_key] = {
+            "RC Product Name": r["pname"],
+            "Current Stock": r["stk"],
+            "Order": r["suggested"],
+        }
 
-    mach_out = pd.DataFrame(mach_rows).sort_values("Suggested Order Qty", ascending=False)
-    mfg_out = pd.DataFrame(mfg_rows).sort_values("Suggested Order Qty", ascending=False)
+    for rc_key, shortfall in machining_shortfall_by_rc.items():
+        if rc_key in mfg_order_map:
+            mfg_order_map[rc_key]["Order"] += shortfall
+        else:
+            mfg_order_map[rc_key] = {
+                "RC Product Name": rc_lookup.get(rc_key, rc_key),
+                "Current Stock": rc_stock_lookup.get(rc_key, 0),
+                "Order": shortfall,
+            }
+
+    mfg_rows = list(mfg_order_map.values())
+
+    mach_out = pd.DataFrame(mach_rows).sort_values("Order", ascending=False)
+    mfg_out = pd.DataFrame(mfg_rows)
+    if not mfg_out.empty:
+        mfg_out = mfg_out[mfg_out["Order"] > 0].sort_values("Order", ascending=False)
     excel_buf = _build_excel(mach_out, mfg_out)
     pdf_buf = _build_pdf(mach_out, mfg_out, today)
     return excel_buf, pdf_buf, mach_out, mfg_out, today
