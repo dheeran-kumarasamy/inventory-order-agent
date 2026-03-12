@@ -119,15 +119,17 @@ def run_report():
         return "⚠️ Please paste the **Master Google Sheet URL** in the sidebar first."
     try:
         with st.spinner("📡 Reading stock + monthly sales tabs from Google Sheets..."):
-            buf, mach_df, mfg_df, today = generate_report(
+            excel_buf, pdf_buf, mach_df, mfg_df, today = generate_report(
                 master_sheet_url,
                 lt_url if lt_url else None,
                 mach_lead,
                 mfg_lead,
             )
 
-        st.session_state["report_buf"] = buf
+        st.session_state["report_buf"] = excel_buf
+        st.session_state["report_pdf_buf"] = pdf_buf
         st.session_state["report_fname"] = f"Inventory_Order_Report_{today.strftime('%Y-%m-%d')}.xlsx"
+        st.session_state["report_pdf_fname"] = f"Inventory_Order_Report_{today.strftime('%Y-%m-%d')}.pdf"
         st.session_state["mach_df"] = mach_df
         st.session_state["mfg_df"] = mfg_df
 
@@ -195,14 +197,25 @@ if gen_btn:
     st.rerun()
 
 if "report_buf" in st.session_state:
-    st.download_button(
-        label="📥 Download Report",
-        data=st.session_state["report_buf"],
-        file_name=st.session_state["report_fname"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        key="download_btn",
-    )
+    dl_col1, dl_col2, _ = st.columns([1, 1, 2])
+    with dl_col1:
+        st.download_button(
+            label="📥 Download Excel",
+            data=st.session_state["report_buf"],
+            file_name=st.session_state["report_fname"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            key="download_excel_btn",
+        )
+    with dl_col2:
+        st.download_button(
+            label="📄 Download PDF",
+            data=st.session_state["report_pdf_buf"],
+            file_name=st.session_state["report_pdf_fname"],
+            mime="application/pdf",
+            type="primary",
+            key="download_pdf_btn",
+        )
 
 if prompt := st.chat_input("Ask a question or type 'generate report'..."):
     st.session_state.messages.append({"role": "user", "content": prompt})

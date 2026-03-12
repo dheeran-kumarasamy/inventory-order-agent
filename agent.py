@@ -3,6 +3,7 @@ import re
 from datetime import date
 
 import pandas as pd
+from fpdf import FPDF
 from openpyxl import Workbook
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
@@ -68,6 +69,66 @@ def _build_excel(mach_out: pd.DataFrame, mfg_out: pd.DataFrame) -> io.BytesIO:
 
     buf = io.BytesIO()
     wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _build_pdf(mach_out: pd.DataFrame, mfg_out: pd.DataFrame, report_date: date) -> io.BytesIO:
+    pdf = FPDF(orientation="L", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # --- Summary Page ---
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, "Inventory Order Report", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"Generated: {report_date.strftime('%d %B %Y')}", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.ln(8)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, "Summary", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    total_mach = int(mach_out["Suggested Order Qty"].sum()) if len(mach_out) else 0
+    total_mfg = int(mfg_out["Suggested Order Qty"].sum()) if len(mfg_out) else 0
+    for label, val in [
+        ("Machining Items", len(mach_out)),
+        ("Manufacturing Items", len(mfg_out)),
+        ("Machining Units", total_mach),
+        ("Manufacturing Units", total_mfg),
+    ]:
+        pdf.cell(80, 7, label, border=1)
+        pdf.cell(40, 7, str(val), border=1, new_x="LMARGIN", new_y="NEXT")
+
+    def _add_table(title, df):
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
+        if df.empty:
+            pdf.set_font("Helvetica", "", 10)
+            pdf.cell(0, 8, "No items.", new_x="LMARGIN", new_y="NEXT")
+            return
+        cols = list(df.columns)
+        n = len(cols)
+        avail = pdf.w - pdf.l_margin - pdf.r_margin
+        col_w = avail / n
+        # Header
+        pdf.set_font("Helvetica", "B", 7)
+        for c in cols:
+            pdf.cell(col_w, 7, str(c)[:22], border=1)
+        pdf.ln()
+        # Rows
+        pdf.set_font("Helvetica", "", 7)
+        for _, row in df.iterrows():
+            for c in cols:
+                txt = str(row[c]) if pd.notna(row[c]) else ""
+                pdf.cell(col_w, 6, txt[:24], border=1)
+            pdf.ln()
+
+    _add_table("Machining Orders", mach_out)
+    _add_table("Manufacturing Orders", mfg_out)
+
+    buf = io.BytesIO()
+    buf.write(pdf.output())
     buf.seek(0)
     return buf
 
@@ -151,5 +212,6 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
 
     mach_out = pd.DataFrame(mach_rows).sort_values("Shortage", ascending=False)
     mfg_out = pd.DataFrame(mfg_rows).sort_values("Shortage", ascending=False)
-    buf = _build_excel(mach_out, mfg_out)
-    return buf, mach_out, mfg_out, today
+    excel_buf = _build_excel(mach_out, mfg_out)
+    pdf_buf = _build_pdf(mach_out, mfg_out, today)
+    return excel_buf, pdf_buf, mach_out, mfg_out, today
