@@ -132,6 +132,8 @@ def normalize_product_name(name: str) -> str:
     normalized = re.sub(r"\s*[Xx]\s*", " X ", normalized)
     normalized = re.sub(r"\s*-\s*", " - ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
+    # Canonicalize "V PULLEY", "V-PULLEY", "V - PULLEY" → "V-PULLEY"
+    normalized = re.sub(r"\bV[\s-]+PULLEY\b", "V-PULLEY", normalized)
     return normalized
 
 
@@ -699,9 +701,9 @@ def generate_rc_mapping_report(master_sheet_url: str):
         if mapping_rule == "NO_RC":
             match_reason = f"No RC required — type '{pulley_type}' is in NO_RC_PULLEY_TYPES"
         elif mapping_rule == "UNKNOWN_V":
-            match_reason = "V-pulley detected but no rule configured for this sub-type"
+            match_reason = "V-pulley detected but no specific sub-type rule configured (e.g. SOLID, HOLLOW, CENTRE BASS, etc.)"
         elif mapping_rule is None:
-            match_reason = "Not a V-pulley type — no RC mapping applies"
+            match_reason = "Not a V-pulley product — no RC mapping applies"
         elif is_mapped_pulley:
             od, grooves = extract_parts(pname)
             effective_rule = mapping_rule
