@@ -225,6 +225,61 @@ def find_rc(od, grooves, rule, rc_lookup):
     return None
 
 
+def find_rc_candidates(od, grooves, rule, rc_lookup):
+    if not (od and grooves and isinstance(rule, dict)):
+        return []
+
+    prefix = normalize_product_name(f"{od} X {grooves}")
+    rc_tokens = rule.get("rc_tokens", [])
+    matches = []
+    for key, value in rc_lookup.items():
+        normalized_key = normalize_product_name(key)
+        if not normalized_key.startswith(prefix):
+            continue
+        if not all(token in normalized_key for token in rc_tokens):
+            continue
+        matches.append(value)
+    return matches
+
+
+def _parse_bass_size_literal(size_literal: str) -> Optional[float]:
+    if not size_literal:
+        return None
+    s = size_literal.strip().replace(" ", "")
+    if not s:
+        return None
+
+    if "/" in s:
+        if "." in s:
+            whole_part, frac_part = s.split(".", 1)
+        else:
+            whole_part, frac_part = "0", s
+        if "/" not in frac_part:
+            return None
+        num, den = frac_part.split("/", 1)
+        if not den:
+            return None
+        return float(whole_part) + (float(num) / float(den))
+
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def extract_bass_size_value(text: str) -> Optional[float]:
+    if not text:
+        return None
+    match = re.search(r'(\d+(?:\.\d+/\d+|\.\d+|/\d+)?)\s*"', str(text))
+    if not match:
+        return None
+    return _parse_bass_size_literal(match.group(1))
+
+
+def _close_size(a: float, b: float) -> bool:
+    return abs(a - b) < 1e-6
+
+
 def resolve_pulley_rc(product_name, pulley_type, od, grooves, mapping_rule, rc_lookup):
     """Resolve RC with bass-size fallback rules for CENTRE_BASS/LG pulleys."""
     if not isinstance(mapping_rule, dict):
@@ -234,23 +289,61 @@ def resolve_pulley_rc(product_name, pulley_type, od, grooves, mapping_rule, rc_l
         rc = find_rc(od, grooves, mapping_rule, rc_lookup)
         return rc, mapping_rule, "Standard rule"
 
-    bass_size = extract_bass_size(product_name)
-    if bass_size:
-        sized_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + [f"{bass_size} BASS"]}
-        rc = find_rc(od, grooves, sized_rule, rc_lookup)
-        return rc, sized_rule, f"Used explicit bass size {bass_size}"
+    candidates = find_rc_candidates(od, grooves, mapping_rule, rc_lookup)
+    if not candidates:
+        return None, mapping_rule, "No RC candidates found for base CENTRE_BASS/LG tokens"
 
-    # If bass size is not in product name: try base rule first, then 4" BASS fallback.
-    rc = find_rc(od, grooves, mapping_rule, rc_lookup)
-    if rc:
-        return rc, mapping_rule, "No bass size in product name; matched RC without bass-size token"
+    product_bass_size = extract_bass_size_value(product_name)
 
-    fallback_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + ['4" BASS']}
-    rc = find_rc(od, grooves, fallback_rule, rc_lookup)
-    if rc:
-        return rc, fallback_rule, "No bass size in product name; matched 4\" BASS fallback"
+    if product_bass_size is not None:
+        sized_candidates = []
+        for rc_name in candidates:
+            rc_size = extract_bass_size_value(rc_name)
+            if rc_size is None:
+                continue
+            if rc_size + 1e-6 < product_bass_size:
+                continue
+            sized_candidates.append((rc_name, rc_size))
 
-    return None, fallback_rule, "No bass size in product name; tried no-bass and 4\" BASS fallback"
+        if not sized_candidates:
+            return (
+                None,
+                mapping_rule,
+                f"Product bass size {product_bass_size:.2f}\"; no RC with bass size >= product size",
+            )
+
+        sized_candidates.sort(key=lambda x: (x[1], x[0]))
+        chosen_rc, chosen_size = sized_candidates[0]
+        return (
+            chosen_rc,
+            mapping_rule,
+            f"Product bass size {product_bass_size:.2f}\"; selected smallest eligible RC bass size {chosen_size:.2f}\"",
+        )
+
+    # No bass size in product name: prefer no-size RC, then 4.00", then 3.50" (including BASS OUTER 3.1/2").
+    unsized = []
+    bass_4 = []
+    bass_35 = []
+    for rc_name in candidates:
+        rc_size = extract_bass_size_value(rc_name)
+        if rc_size is None:
+            unsized.append(rc_name)
+        elif _close_size(rc_size, 4.0):
+            bass_4.append(rc_name)
+        elif _close_size(rc_size, 3.5):
+            bass_35.append(rc_name)
+
+    if unsized:
+        unsized.sort()
+        return unsized[0], mapping_rule, "No bass size in product name; preferred RC without bass size"
+    if bass_4:
+        bass_4.sort()
+        return bass_4[0], mapping_rule, "No bass size in product name; used 4.00\" bass fallback"
+    if bass_35:
+        bass_35.sort()
+        return bass_35[0], mapping_rule, "No bass size in product name; used 3.50\" bass fallback (incl. BASS OUTER 3.1/2)"
+
+    return None, mapping_rule, "No bass size in product name; no allowed fallback RC found (no-size/4.00\"/3.50\")"
 
 
 def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: Set[str]):
