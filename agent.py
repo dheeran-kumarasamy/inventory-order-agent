@@ -66,9 +66,7 @@ def find_rc(od, grooves, ptype, rc_lookup):
     candidate = f"{od} X {grooves} - {abbrev} - RC".upper() if abbrev else None
     if candidate and candidate in rc_lookup:
         return rc_lookup[candidate]
-    prefix = f"{od} X {grooves}".upper()
-    matches = [v for k, v in rc_lookup.items() if k.startswith(prefix) and "RC" in k]
-    return matches[0] if matches else None
+    return None
 
 
 def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: set[str]):
