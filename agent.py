@@ -61,11 +61,33 @@ def extract_parts(name: str):
     return od, grooves, ptype
 
 
-def find_rc(od, grooves, ptype, rc_lookup):
+def normalize_product_name(name: str) -> str:
+    normalized = str(name).upper().replace("×", "X")
+    normalized = re.sub(r"\s*[Xx]\s*", " X ", normalized)
+    normalized = re.sub(r"\s*-\s*", " - ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def build_expected_rc_name(od, grooves, ptype):
     abbrev = TYPE_ABBREV.get(ptype, "")
-    candidate = f"{od} X {grooves} - {abbrev} - RC".upper() if abbrev else None
+    if not (od and grooves and abbrev):
+        return None
+    return normalize_product_name(f"{od} X {grooves} - {abbrev} - RC")
+
+
+def find_rc(od, grooves, ptype, rc_lookup):
+    candidate = build_expected_rc_name(od, grooves, ptype)
     if candidate and candidate in rc_lookup:
         return rc_lookup[candidate]
+
+    if not (od and grooves):
+        return None
+
+    prefix = normalize_product_name(f"{od} X {grooves}")
+    matches = [v for k, v in rc_lookup.items() if normalize_product_name(k).startswith(prefix)]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -350,7 +372,8 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
     mach_df = below[~rc_mask].copy()
 
     all_rc = stock[stock["ProductName"].str.contains(r"\bRC\b", case=False, na=False)]
-    rc_lookup = {n.upper(): n for n in all_rc["ProductName"]}
+    rc_lookup = {normalize_product_name(n): n for n in all_rc["ProductName"]}
+    rc_name_by_key = {n.upper(): n for n in all_rc["ProductName"]}
     rc_stock_lookup = {
         row["ProductName"].upper(): int(row["StockLevel"])
         for _, row in all_rc.iterrows()
@@ -388,9 +411,13 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         is_vp = "V-PULLEY" in pname.upper()
         rc = None
         rc_available = None
+        expected_rc = None
         if is_vp:
             od, grooves, ptype = extract_parts(pname)
+            expected_rc = build_expected_rc_name(od, grooves, ptype)
             rc = find_rc(od, grooves, ptype, rc_lookup)
+            if not rc and expected_rc:
+                rc = expected_rc
         if rc:
             rc_key = rc.upper()
             rc_available = remaining_rc_stock.get(rc_key, 0)
@@ -399,8 +426,10 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             machining_shortfall = max(r["suggested"] - suggested, 0)
             if machining_shortfall:
                 machining_shortfall_by_rc[rc_key] = machining_shortfall_by_rc.get(rc_key, 0) + machining_shortfall
+            if rc_key not in rc_name_by_key:
+                rc_name_by_key[rc_key] = rc
         else:
-            suggested = r["suggested"]
+            suggested = 0 if is_vp else r["suggested"]
         mach_rows.append(
             {
                 "Product Name": pname,
@@ -427,7 +456,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             mfg_order_map[rc_key]["Order"] += shortfall
         else:
             mfg_order_map[rc_key] = {
-                "RC Product Name": rc_lookup.get(rc_key, rc_key),
+                "RC Product Name": rc_name_by_key.get(rc_key, rc_key),
                 "Current Stock": rc_stock_lookup.get(rc_key, 0),
                 "Order": shortfall,
                 "Avg Monthly Sales": 0.0,
