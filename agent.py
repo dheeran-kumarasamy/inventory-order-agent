@@ -806,8 +806,9 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
 
     consolidated_out = pd.DataFrame(consolidated_rows)
     if not consolidated_out.empty:
-        consolidated_out["_sort"] = pd.to_numeric(consolidated_out["M/C Order"], errors="coerce").fillna(0) + pd.to_numeric(consolidated_out["Manufacturing Order"], errors="coerce").fillna(0)
-        consolidated_out = consolidated_out.sort_values(["_sort", "Product name"], ascending=[False, True]).drop(columns=["_sort"])
+        consolidated_out["_mc_sort"] = pd.to_numeric(consolidated_out["M/C Order"], errors="coerce").fillna(0)
+        consolidated_out["_mfg_sort"] = pd.to_numeric(consolidated_out["Manufacturing Order"], errors="coerce").fillna(0)
+        consolidated_out = consolidated_out.sort_values(["_mc_sort", "_mfg_sort"], ascending=[False, False]).drop(columns=["_mc_sort", "_mfg_sort"])
 
     excel_buf = _build_excel(mach_out, mfg_out)
     pdf_buf = _build_pdf(mach_out, mfg_out, today)
