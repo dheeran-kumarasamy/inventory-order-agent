@@ -33,13 +33,68 @@ DATA_COLS = {
 
 from sheets_loader import load_leadtime_from_sheet, load_sales_from_sheet, load_stock_from_sheet
 
-TYPE_ABBREV = {
-    "CENTRE BASS": "CB",
-    "SOLID": "SOLID",
-    "HOLLOW": "HOLLOW",
-    "HALF SOLID": "HALF SOLID",
-    "LIGHT": "LIGHT",
+NO_RC_PULLEY_TYPES = {
+    "DOUBLE BASS FLAT PULLEY",
+    "SINGLE BASS FLAT PULLEY",
+    "HEAVY DOUBLE SIDE FLAT PULLEY",
+    "PADI PULLEY",
+    "COUPLED FLANGE",
+    "PLAIN PULLEY",
+    "MUFF COUPLING",
+    "STEERING WHEEL",
+    "FAN / IMPELLER",
 }
+
+RC_MAPPING_RULES = [
+    {
+        "name": "HOLLOW_HY_BASS",
+        "match_all": ["HOLLOW", "V-PULLEY", "HY BASS"],
+        "rc_tokens": ["SOLID", "HY BASS", "RC"],
+        "expected_suffix": "SOLID - HY BASS - RC",
+    },
+    {
+        "name": "DISC_TYPE",
+        "match_all": ["DISC TYPE", "V-PULLEY"],
+        "rc_tokens": ["DISC TYPE", "RC"],
+        "expected_suffix": "DISC TYPE - RC",
+    },
+    {
+        "name": "HALF_SOLID",
+        "match_all": ["HALF SOLID", "V-PULLEY"],
+        "rc_tokens": ["HALF SOLID", "RC"],
+        "expected_suffix": "HALF SOLID - RC",
+    },
+    {
+        "name": "HEAVY_BASS",
+        "match_all": ["HEAVY BASS", "V-PULLEY"],
+        "rc_tokens": ["SOLID", "RC"],
+        "expected_suffix": "SOLID - RC",
+    },
+    {
+        "name": "CENTRE_BASS",
+        "match_all": ["CENTRE BASS", "V-PULLEY"],
+        "rc_tokens": ["CB", "RC"],
+        "expected_suffix": "CB - RC",
+    },
+    {
+        "name": "LIGHT",
+        "match_all": ["LIGHT", "V-PULLEY"],
+        "rc_tokens": ["LIGHT", "RC"],
+        "expected_suffix": "LIGHT - RC",
+    },
+    {
+        "name": "SOLID",
+        "match_all": ["SOLID", "V-PULLEY"],
+        "rc_tokens": ["SOLID", "RC"],
+        "expected_suffix": "SOLID - RC",
+    },
+    {
+        "name": "HOLLOW",
+        "match_all": ["HOLLOW", "V-PULLEY"],
+        "rc_tokens": ["HOLLOW", "RC"],
+        "expected_suffix": None,
+    },
+]
 
 
 def calc_avg_sales(sales: pd.DataFrame) -> pd.DataFrame:
@@ -53,12 +108,10 @@ def calc_avg_sales(sales: pd.DataFrame) -> pd.DataFrame:
 def extract_parts(name: str):
     parts = re.split(r"\s*-\s*", name, maxsplit=1)
     prefix = parts[0].strip()
-    suffix = (parts[1] if len(parts) > 1 else "").upper()
     tokens = [t.strip() for t in re.split(r"\s*[Xx]\s*", prefix)]
     od = tokens[0] if len(tokens) > 0 else ""
     grooves = tokens[1] if len(tokens) > 1 else ""
-    ptype = next((k for k in TYPE_ABBREV if k in suffix), None)
-    return od, grooves, ptype
+    return od, grooves
 
 
 def normalize_product_name(name: str) -> str:
@@ -69,23 +122,50 @@ def normalize_product_name(name: str) -> str:
     return normalized
 
 
-def build_expected_rc_name(od, grooves, ptype):
-    abbrev = TYPE_ABBREV.get(ptype, "")
-    if not (od and grooves and abbrev):
+def _contains_all(text: str, terms: list[str]) -> bool:
+    return all(term in text for term in terms)
+
+
+def get_mapping_rule(product_name: str):
+    normalized = normalize_product_name(product_name)
+
+    for no_rc_name in NO_RC_PULLEY_TYPES:
+        if no_rc_name in normalized:
+            return "NO_RC"
+
+    for rule in RC_MAPPING_RULES:
+        if _contains_all(normalized, rule["match_all"]):
+            return rule
+
+    return None
+
+
+def build_expected_rc_name(od, grooves, rule):
+    expected_suffix = rule.get("expected_suffix") if isinstance(rule, dict) else None
+    if not (od and grooves and expected_suffix):
         return None
-    return normalize_product_name(f"{od} X {grooves} - {abbrev} - RC")
+    return normalize_product_name(f"{od} X {grooves} - {expected_suffix}")
 
 
-def find_rc(od, grooves, ptype, rc_lookup):
-    candidate = build_expected_rc_name(od, grooves, ptype)
+def find_rc(od, grooves, rule, rc_lookup):
+    if not (od and grooves and isinstance(rule, dict)):
+        return None
+
+    candidate = build_expected_rc_name(od, grooves, rule)
     if candidate and candidate in rc_lookup:
         return rc_lookup[candidate]
 
-    if not (od and grooves):
-        return None
-
     prefix = normalize_product_name(f"{od} X {grooves}")
-    matches = [v for k, v in rc_lookup.items() if normalize_product_name(k).startswith(prefix)]
+    rc_tokens = rule.get("rc_tokens", [])
+    matches = []
+    for key, value in rc_lookup.items():
+        normalized_key = normalize_product_name(key)
+        if not normalized_key.startswith(prefix):
+            continue
+        if not all(token in normalized_key for token in rc_tokens):
+            continue
+        matches.append(value)
+
     if len(matches) == 1:
         return matches[0]
     return None
@@ -408,16 +488,18 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
     machining_shortfall_by_rc = {}
     for r in enrich(mach_df, mach_lead):
         pname = r["pname"]
-        is_vp = "V-PULLEY" in pname.upper()
+        mapping_rule = get_mapping_rule(pname)
+        is_mapped_pulley = isinstance(mapping_rule, dict)
         rc = None
         rc_available = None
         expected_rc = None
-        if is_vp:
-            od, grooves, ptype = extract_parts(pname)
-            expected_rc = build_expected_rc_name(od, grooves, ptype)
-            rc = find_rc(od, grooves, ptype, rc_lookup)
+        if is_mapped_pulley:
+            od, grooves = extract_parts(pname)
+            expected_rc = build_expected_rc_name(od, grooves, mapping_rule)
+            rc = find_rc(od, grooves, mapping_rule, rc_lookup)
             if not rc and expected_rc:
                 rc = expected_rc
+
         if rc:
             rc_key = rc.upper()
             rc_available = remaining_rc_stock.get(rc_key, 0)
@@ -429,13 +511,21 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             if rc_key not in rc_name_by_key:
                 rc_name_by_key[rc_key] = rc
         else:
-            suggested = 0 if is_vp else r["suggested"]
+            suggested = 0 if is_mapped_pulley else r["suggested"]
+
+        if is_mapped_pulley:
+            rc_required = rc if rc else "No RC Found"
+        elif mapping_rule == "NO_RC":
+            rc_required = "N/A"
+        else:
+            rc_required = "N/A"
+
         mach_rows.append(
             {
                 "Product Name": pname,
                 "Product Stock": r["stk"],
                 "Avg Monthly Sales": r["amonthly"],
-                "RC Required": rc if rc else ("No RC Found" if is_vp else "N/A"),
+                "RC Required": rc_required,
                 "RC Stock": rc_available if rc_available is not None else "N/A",
                 "Order": suggested,
             }
