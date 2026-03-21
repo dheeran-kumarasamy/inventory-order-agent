@@ -2,6 +2,7 @@ import io
 import math
 import re
 from datetime import date
+from typing import List, Set
 
 import pandas as pd
 from fpdf import FPDF
@@ -134,11 +135,11 @@ def normalize_product_name(name: str) -> str:
     return normalized
 
 
-def _contains_all(text: str, terms: list[str]) -> bool:
+def _contains_all(text: str, terms: List[str]) -> bool:
     return all(term in text for term in terms)
 
 
-def _contains_any(text: str, terms: list[str]) -> bool:
+def _contains_any(text: str, terms: List[str]) -> bool:
     return any(term in text for term in terms)
 
 
@@ -222,7 +223,7 @@ def find_rc(od, grooves, rule, rc_lookup):
     return None
 
 
-def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: set[str]):
+def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: Set[str]):
     cols = list(df.columns)
     col_idx = {c: i + 1 for i, c in enumerate(cols)}
     numeric_cols = {c for c in cols if pd.api.types.is_numeric_dtype(df[c])}
