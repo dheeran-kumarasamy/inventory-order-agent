@@ -137,6 +137,16 @@ def normalize_product_name(name: str) -> str:
     return normalized
 
 
+def is_invalid_product_name(name: str) -> bool:
+    return str(name).strip().upper().startswith("XXX")
+
+
+def filter_valid_products(df: pd.DataFrame, name_col: str) -> pd.DataFrame:
+    if name_col not in df.columns:
+        return df
+    return df[~df[name_col].map(is_invalid_product_name)].copy()
+
+
 def _contains_all(text: str, terms: List[str]) -> bool:
     return all(term in text for term in terms)
 
@@ -618,6 +628,8 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
 
     stock = load_stock_from_sheet(master_sheet_url)
     sales = load_sales_from_sheet(master_sheet_url)
+    stock = filter_valid_products(stock, "ProductName")
+    sales = filter_valid_products(sales, "ProductName")
     _ = load_leadtime_from_sheet(lt_url) if lt_url else None
     avg = calc_avg_sales(sales)
 
@@ -807,6 +819,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
 def generate_rc_mapping_report(master_sheet_url: str):
     """Generate a diagnostic mapping report for ALL stock products showing RC match status and reasoning."""
     stock = load_stock_from_sheet(master_sheet_url)
+    stock = filter_valid_products(stock, "ProductName")
 
     all_rc = stock[stock["ProductName"].str.contains(r"\bRC\b", case=False, na=False)]
     rc_lookup = {normalize_product_name(n): n for n in all_rc["ProductName"]}
