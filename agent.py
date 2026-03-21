@@ -2,7 +2,7 @@ import io
 import math
 import re
 from datetime import date
-from typing import List, Set
+from typing import List, Optional, Set
 
 import pandas as pd
 from fpdf import FPDF
@@ -117,14 +117,14 @@ def extract_parts(name: str):
     return od, grooves
 
 
-def extract_bass_size(product_name: str) -> str:
-    """Extract inch-size indicator from product name description (e.g. '5"' -> '5"'). Default '4"'."""
+def extract_bass_size(product_name: str) -> Optional[str]:
+    """Extract inch-size indicator from product name description (e.g. '5"' -> '5"')."""
     desc_parts = re.split(r"\s*-\s*", str(product_name), maxsplit=1)
     desc = desc_parts[1] if len(desc_parts) > 1 else str(product_name)
     match = re.search(r'(\d+)"', desc)
     if match:
         return f'{match.group(1)}"'
-    return '4"'
+    return None
 
 
 def normalize_product_name(name: str) -> str:
@@ -223,6 +223,34 @@ def find_rc(od, grooves, rule, rc_lookup):
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def resolve_pulley_rc(product_name, pulley_type, od, grooves, mapping_rule, rc_lookup):
+    """Resolve RC with bass-size fallback rules for CENTRE_BASS/LG pulleys."""
+    if not isinstance(mapping_rule, dict):
+        return None, mapping_rule, "No mapping rule"
+
+    if pulley_type not in ("CENTRE_BASS", "LG"):
+        rc = find_rc(od, grooves, mapping_rule, rc_lookup)
+        return rc, mapping_rule, "Standard rule"
+
+    bass_size = extract_bass_size(product_name)
+    if bass_size:
+        sized_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + [f"{bass_size} BASS"]}
+        rc = find_rc(od, grooves, sized_rule, rc_lookup)
+        return rc, sized_rule, f"Used explicit bass size {bass_size}"
+
+    # If bass size is not in product name: try base rule first, then 4" BASS fallback.
+    rc = find_rc(od, grooves, mapping_rule, rc_lookup)
+    if rc:
+        return rc, mapping_rule, "No bass size in product name; matched RC without bass-size token"
+
+    fallback_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + ['4" BASS']}
+    rc = find_rc(od, grooves, fallback_rule, rc_lookup)
+    if rc:
+        return rc, fallback_rule, "No bass size in product name; matched 4\" BASS fallback"
+
+    return None, fallback_rule, "No bass size in product name; tried no-bass and 4\" BASS fallback"
 
 
 def _apply_excel_sheet(ws, df: pd.DataFrame, highlight_cols: Set[str]):
@@ -551,13 +579,18 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         expected_rc = None
         od, grooves = "", ""
         effective_rule = mapping_rule
+        resolution_note = ""
         if is_mapped_pulley:
             od, grooves = extract_parts(pname)
-            if pulley_type in ("CENTRE_BASS", "LG"):
-                bass_size = extract_bass_size(pname)
-                effective_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + [f"{bass_size} BASS"]}
+            rc, effective_rule, resolution_note = resolve_pulley_rc(
+                pname,
+                pulley_type,
+                od,
+                grooves,
+                mapping_rule,
+                rc_lookup,
+            )
             expected_rc = build_expected_rc_name(od, grooves, effective_rule)
-            rc = find_rc(od, grooves, effective_rule, rc_lookup)
             if not rc and expected_rc:
                 rc = expected_rc
 
@@ -590,12 +623,14 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         elif is_mapped_pulley and rc:
             rc_match_note = (
                 f"Matched with size prefix '{od} X {grooves}' and RC tokens "
-                f"{', '.join(effective_rule.get('rc_tokens', []) if isinstance(effective_rule, dict) else [])}"
+                f"{', '.join(effective_rule.get('rc_tokens', []) if isinstance(effective_rule, dict) else [])}. "
+                f"{resolution_note}"
             )
         elif is_mapped_pulley:
             rc_match_note = (
                 f"No RC found for size prefix '{od} X {grooves}' with RC tokens "
-                f"{', '.join(effective_rule.get('rc_tokens', []) if isinstance(effective_rule, dict) else [])}"
+                f"{', '.join(effective_rule.get('rc_tokens', []) if isinstance(effective_rule, dict) else [])}. "
+                f"{resolution_note}"
             )
         else:
             rc_match_note = "Not a mapped pulley type"
@@ -706,18 +741,20 @@ def generate_rc_mapping_report(master_sheet_url: str):
             match_reason = "Not a V-pulley product — no RC mapping applies"
         elif is_mapped_pulley:
             od, grooves = extract_parts(pname)
-            effective_rule = mapping_rule
-            if pulley_type in ("CENTRE_BASS", "LG"):
-                bass_size = extract_bass_size(pname)
-                effective_rule = {**mapping_rule, "rc_tokens": mapping_rule["rc_tokens"] + [f"{bass_size} BASS"]}
-
-            rc = find_rc(od, grooves, effective_rule, rc_lookup)
+            rc, effective_rule, resolution_note = resolve_pulley_rc(
+                pname,
+                pulley_type,
+                od,
+                grooves,
+                mapping_rule,
+                rc_lookup,
+            )
             if rc:
                 rc_name = rc
                 rc_stock_val = rc_stock_lookup.get(rc.upper(), 0)
                 match_reason = (
                     f"Matched via size prefix '{od} X {grooves}' + tokens: "
-                    f"{', '.join(effective_rule.get('rc_tokens', []))}"
+                    f"{', '.join(effective_rule.get('rc_tokens', []))}. {resolution_note}"
                 )
             else:
                 prefix = normalize_product_name(f"{od} X {grooves}")
@@ -737,18 +774,18 @@ def generate_rc_mapping_report(master_sheet_url: str):
                         match_reason = (
                             f"No RC found for '{od} X {grooves}' + tokens {rc_tokens}. "
                             f"Found {len(base_candidates)} RC(s) without bass size filter: "
-                            f"{'; '.join(str(c) for c in base_candidates[:3])}"
+                            f"{'; '.join(str(c) for c in base_candidates[:3])}. {resolution_note}"
                         )
                     else:
                         match_reason = (
                             f"No RC in stock for size prefix '{od} X {grooves}' "
-                            f"with tokens: {', '.join(rc_tokens)}"
+                            f"with tokens: {', '.join(rc_tokens)}. {resolution_note}"
                         )
                 else:
                     match_reason = (
                         f"Ambiguous — {len(candidates)} RC products match "
                         f"'{od} X {grooves}' + tokens {rc_tokens}: "
-                        f"{'; '.join(str(c) for c in candidates[:3])}"
+                        f"{'; '.join(str(c) for c in candidates[:3])}. {resolution_note}"
                     )
 
         rows.append({
