@@ -37,6 +37,7 @@ NO_RC_PULLEY_TYPES = {
     "DOUBLE BASS FLAT PULLEY",
     "SINGLE BASS FLAT PULLEY",
     "HEAVY DOUBLE SIDE FLAT PULLEY",
+    "HEAVY BASS FLAT PULLEY",
     "PADI PULLEY",
     "COUPLED FLANGE",
     "PLAIN PULLEY",
@@ -72,13 +73,20 @@ RC_MAPPING_RULES = [
     },
     {
         "name": "CENTRE_BASS",
-        "match_all": ["CENTRE BASS", "V-PULLEY"],
+        "match_any": ["CENTRE BASS", "CENTER BASS"],
+        "match_all": ["V-PULLEY"],
+        "rc_tokens": ["CB", "RC"],
+        "expected_suffix": "CB - RC",
+    },
+    {
+        "name": "LG",
+        "match_all": ["LG V"],
         "rc_tokens": ["CB", "RC"],
         "expected_suffix": "CB - RC",
     },
     {
         "name": "LIGHT",
-        "match_all": ["LIGHT", "V-PULLEY"],
+        "match_all": ["LIGHT V"],
         "rc_tokens": ["LIGHT", "RC"],
         "expected_suffix": "LIGHT - RC",
     },
@@ -126,16 +134,57 @@ def _contains_all(text: str, terms: list[str]) -> bool:
     return all(term in text for term in terms)
 
 
-def get_mapping_rule(product_name: str):
+def _contains_any(text: str, terms: list[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def classify_pulley_type(product_name: str):
     normalized = normalize_product_name(product_name)
 
     for no_rc_name in NO_RC_PULLEY_TYPES:
         if no_rc_name in normalized:
             return "NO_RC"
 
+    if "DISC TYPE" in normalized:
+        return "DISC_TYPE"
+    if "HALF SOLID" in normalized:
+        return "HALF_SOLID"
+    if "HOLLOW" in normalized and "HY BASS" in normalized:
+        return "HOLLOW_HY_BASS"
+    if "HEAVY BASS" in normalized:
+        return "HEAVY_BASS"
+    if "CENTRE BASS" in normalized or "CENTER BASS" in normalized:
+        return "CENTRE_BASS"
+    if "LIGHT V" in normalized:
+        return "LIGHT"
+    if "LG V" in normalized:
+        return "LG"
+    if "HOLLOW" in normalized:
+        return "HOLLOW"
+    if "SOLID" in normalized:
+        return "SOLID"
+
+    if "V-PULLEY" in normalized:
+        return "UNKNOWN_V"
+
+    return None
+
+
+def get_mapping_rule(product_name: str):
+    normalized = normalize_product_name(product_name)
+    pulley_type = classify_pulley_type(product_name)
+    if pulley_type in {"NO_RC", "UNKNOWN_V", None}:
+        return pulley_type
+
     for rule in RC_MAPPING_RULES:
-        if _contains_all(normalized, rule["match_all"]):
-            return rule
+        if rule["name"] != pulley_type:
+            continue
+        if not _contains_all(normalized, rule.get("match_all", [])):
+            continue
+        match_any = rule.get("match_any")
+        if match_any and not _contains_any(normalized, match_any):
+            continue
+        return rule
 
     return None
 
@@ -490,6 +539,7 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         pname = r["pname"]
         mapping_rule = get_mapping_rule(pname)
         is_mapped_pulley = isinstance(mapping_rule, dict)
+        is_unknown_v_pulley = mapping_rule == "UNKNOWN_V"
         rc = None
         rc_available = None
         expected_rc = None
@@ -511,12 +561,14 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
             if rc_key not in rc_name_by_key:
                 rc_name_by_key[rc_key] = rc
         else:
-            suggested = 0 if is_mapped_pulley else r["suggested"]
+            suggested = 0 if (is_mapped_pulley or is_unknown_v_pulley) else r["suggested"]
 
         if is_mapped_pulley:
             rc_required = rc if rc else "No RC Found"
         elif mapping_rule == "NO_RC":
             rc_required = "N/A"
+        elif is_unknown_v_pulley:
+            rc_required = "No RC Mapping Rule"
         else:
             rc_required = "N/A"
 
