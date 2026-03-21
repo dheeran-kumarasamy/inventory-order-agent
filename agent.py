@@ -48,12 +48,6 @@ NO_RC_PULLEY_TYPES = {
 
 RC_MAPPING_RULES = [
     {
-        "name": "HOLLOW_HY_BASS",
-        "match_all": ["HOLLOW", "V-PULLEY", "HY BASS"],
-        "rc_tokens": ["SOLID", "HY BASS", "RC"],
-        "expected_suffix": "SOLID - HY BASS - RC",
-    },
-    {
         "name": "DISC_TYPE",
         "match_all": ["DISC TYPE", "V-PULLEY"],
         "rc_tokens": ["DISC TYPE", "RC"],
@@ -68,8 +62,8 @@ RC_MAPPING_RULES = [
     {
         "name": "HEAVY_BASS",
         "match_all": ["HEAVY BASS", "V-PULLEY"],
-        "rc_tokens": ["SOLID", "RC"],
-        "expected_suffix": "SOLID - RC",
+        "rc_tokens": ["HEAVY BASS", "RC"],
+        "expected_suffix": "HEAVY BASS - RC",
     },
     {
         "name": "CENTRE_BASS",
@@ -149,8 +143,6 @@ def classify_pulley_type(product_name: str):
         return "DISC_TYPE"
     if "HALF SOLID" in normalized:
         return "HALF_SOLID"
-    if "HOLLOW" in normalized and "HY BASS" in normalized:
-        return "HOLLOW_HY_BASS"
     if "HEAVY BASS" in normalized:
         return "HEAVY_BASS"
     if "CENTRE BASS" in normalized or "CENTER BASS" in normalized:
@@ -537,12 +529,14 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
     machining_shortfall_by_rc = {}
     for r in enrich(mach_df, mach_lead):
         pname = r["pname"]
+        pulley_type = classify_pulley_type(pname)
         mapping_rule = get_mapping_rule(pname)
         is_mapped_pulley = isinstance(mapping_rule, dict)
         is_unknown_v_pulley = mapping_rule == "UNKNOWN_V"
         rc = None
         rc_available = None
         expected_rc = None
+        od, grooves = "", ""
         if is_mapped_pulley:
             od, grooves = extract_parts(pname)
             expected_rc = build_expected_rc_name(od, grooves, mapping_rule)
@@ -572,13 +566,32 @@ def generate_report(master_sheet_url, lt_url, mach_lead, mfg_lead):
         else:
             rc_required = "N/A"
 
+        if mapping_rule == "NO_RC":
+            rc_match_note = "No RC mapping required for this product type"
+        elif is_unknown_v_pulley:
+            rc_match_note = "Unknown V-pulley type; no mapping rule configured"
+        elif is_mapped_pulley and rc:
+            rc_match_note = (
+                f"Matched with size prefix '{od} X {grooves}' and RC tokens "
+                f"{', '.join(mapping_rule.get('rc_tokens', []))}"
+            )
+        elif is_mapped_pulley:
+            rc_match_note = (
+                f"No RC found for size prefix '{od} X {grooves}' with RC tokens "
+                f"{', '.join(mapping_rule.get('rc_tokens', []))}"
+            )
+        else:
+            rc_match_note = "Not a mapped pulley type"
+
         mach_rows.append(
             {
                 "Product Name": pname,
                 "Product Stock": r["stk"],
                 "Avg Monthly Sales": r["amonthly"],
+                "Detected Pulley Type": pulley_type if pulley_type else "N/A",
                 "RC Required": rc_required,
                 "RC Stock": rc_available if rc_available is not None else "N/A",
+                "RC Match Note": rc_match_note,
                 "Order": suggested,
             }
         )
