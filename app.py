@@ -4,7 +4,7 @@ import traceback
 import pandas as pd
 import streamlit as st
 
-from agent import generate_report
+from agent import generate_rc_mapping_report, generate_report
 from sheets_loader import discover_master_sheet_structure
 
 
@@ -103,10 +103,12 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-col1, col2, _ = st.columns([1, 1, 2])
+col1, col2, col3, _ = st.columns([1, 1, 1, 1])
 with col1:
     gen_btn = st.button("📊 Generate Report", type="primary", use_container_width=True, key="generate_btn")
 with col2:
+    audit_btn = st.button("🔍 RC Mapping Audit", use_container_width=True, key="audit_btn")
+with col3:
     clr_btn = st.button("🗑️ Clear Chat", use_container_width=True, key="clear_btn")
 
 if clr_btn:
@@ -244,6 +246,47 @@ if "consolidated_report_buf" in st.session_state:
             type="primary",
             key="download_consolidated_pdf_btn",
         )
+
+if audit_btn:
+    if not master_sheet_url:
+        st.warning("Please paste the Master Google Sheet URL in the sidebar first.")
+    else:
+        try:
+            with st.spinner("🔍 Running RC mapping audit across all stock products..."):
+                audit_df, audit_buf = generate_rc_mapping_report(master_sheet_url)
+            st.session_state["audit_df"] = audit_df
+            st.session_state["audit_buf"] = audit_buf
+        except Exception as e:
+            st.error(f"❌ Audit failed: {_format_exception(e)}")
+
+if "audit_df" in st.session_state:
+    audit_df = st.session_state["audit_df"]
+    st.markdown("### RC Mapping Audit")
+    matched = audit_df[audit_df["Matched RC"] != "—"]
+    unmatched = audit_df[
+        audit_df["Matched RC"].eq("—") &
+        ~audit_df["Classified Type"].isin(["NO_RC", "N/A", None])
+    ]
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Total Products", len(audit_df))
+    a2.metric("Matched to RC", len(matched))
+    a3.metric("Unmatched (need RC)", len(unmatched))
+
+    tab1, tab2, tab3 = st.tabs(["All Products", "Matched", "Unmatched / No RC"])
+    with tab1:
+        st.dataframe(audit_df, use_container_width=True, hide_index=True)
+    with tab2:
+        st.dataframe(matched, use_container_width=True, hide_index=True)
+    with tab3:
+        st.dataframe(unmatched, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        label="📥 Download Audit Excel",
+        data=st.session_state["audit_buf"],
+        file_name=f"RC_Mapping_Audit_{date.today().strftime('%Y-%m-%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_audit_btn",
+    )
 
 if prompt := st.chat_input("Ask a question or type 'generate report'..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
